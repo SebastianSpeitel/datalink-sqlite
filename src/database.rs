@@ -23,6 +23,16 @@ pub enum Error {
     Sql(#[from] rusqlite::Error),
 }
 
+impl From<Error> for LBE {
+    #[inline]
+    fn from(value: Error) -> Self {
+        match value {
+            Error::Link(e) => e,
+            Error::Sql(e) => LBE::Other(Box::new(e)),
+        }
+    }
+}
+
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 const INIT_DB: &str = include_str!("init_db.sql");
@@ -108,17 +118,13 @@ impl Database {
         let mut inserter = Inserter {
             tx,
             source_id: id,
-            key_id: None,
-            target_id: None,
-            error: None,
+            key: None,
+            target: None,
         };
 
         data.provide_links(&mut inserter)?;
 
-        match inserter.error {
-            Some(e) => Err(e),
-            None => Ok(id),
-        }
+        Ok(id)
     }
 
     #[inline]
@@ -192,71 +198,48 @@ impl Data for Database {
 struct Inserter<'tx> {
     tx: &'tx rusqlite::Transaction<'tx>,
     source_id: ID,
-    key_id: Option<ID>,
-    target_id: Option<ID>,
-    error: Option<Error>,
+    key: Option<BoxedData>,
+    target: Option<BoxedData>,
 }
 
 impl LinkBuilder for Inserter<'_> {
     #[inline]
     fn set_key(&mut self, key: BoxedData) {
-        if self.error.is_some() {
-            return;
-        }
-        let key = key.into_unique_random();
-        let id = Database::store_inner(self.tx, &key);
-        match id {
-            Ok(id) => {
-                self.key_id.replace(id);
-            }
-            Err(e) => {
-                self.error.replace(e);
-            }
-        }
+        self.key.replace(key);
     }
 
     #[inline]
     fn set_target(&mut self, target: BoxedData) {
-        if self.error.is_some() {
-            return;
-        }
-        let target = target.into_unique_random();
-        let id = Database::store_inner(self.tx, &target);
-        match id {
-            Ok(id) => {
-                self.target_id.replace(id);
-            }
-            Err(e) => {
-                self.error.replace(e);
-            }
-        }
+        self.target.replace(target);
     }
 
     #[inline]
     fn build(&mut self) -> Result<(), LBE> {
-        if self.error.is_some() {
-            return Ok(());
-        }
-        let key_id = self.key_id.take();
-        let target_id = self.target_id.take().ok_or(LBE::MissingTarget)?;
+        let key_id = self
+            .key
+            .take()
+            .map(|k| {
+                let k = k.into_unique_random();
+                let id = Database::store_inner(self.tx, &k)?;
+                Ok::<_, Error>(id.to_string())
+            })
+            .transpose()?;
 
-        let mut stmt = match self.tx.prepare_cached(INSERT_LINK) {
-            Ok(stmt) => stmt,
-            Err(e) => {
-                self.error.replace(e.into());
-                return Ok(());
-            }
+        let target_id = {
+            let t = self.target.take().ok_or(LBE::MissingTarget)?;
+            let t = t.into_unique_random();
+            let id = Database::store_inner(self.tx, &t)?;
+            id.to_string()
         };
 
-        let res = stmt.execute(params![
-            self.source_id.to_string(),
-            key_id.map(|id| id.to_string()),
-            target_id.to_string()
-        ]);
+        let mut stmt = self
+            .tx
+            .prepare_cached(INSERT_LINK)
+            .map_err(|e| LBE::Other(Box::new(e)))?;
 
-        if let Err(e) = res {
-            self.error.replace(e.into());
-        }
+        stmt.execute(params![self.source_id.to_string(), key_id, target_id,])
+            .map_err(|e| LBE::Other(Box::new(e)))?;
+
         Ok(())
     }
 

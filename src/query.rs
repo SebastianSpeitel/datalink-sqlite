@@ -46,6 +46,17 @@ pub struct SQLBuilder<C = (), Op: Operator = Conjunction> {
     op: PhantomData<Op>,
 }
 
+impl TryFrom<&Query> for SQLBuilder {
+    type Error = Error;
+
+    #[inline]
+    fn try_from(query: &Query) -> Result<Self, Self::Error> {
+        let mut sql = Self::default();
+        query.build_sql(&mut sql)?;
+        Ok(sql)
+    }
+}
+
 impl<C> SQLBuilder<C> {
     #[inline]
     #[must_use]
@@ -177,17 +188,6 @@ impl<C: Debug, O: Operator> Debug for SQLBuilder<C, O> {
     }
 }
 
-impl TryFrom<&Query> for SQLBuilder {
-    type Error = Error;
-
-    #[inline]
-    fn try_from(query: &Query) -> Result<Self, Self::Error> {
-        let mut sql = Self::default();
-        query.build_sql(&mut sql)?;
-        Ok(sql)
-    }
-}
-
 pub trait SqlFragment {
     type Context;
     fn build_sql(&self, sql: &mut SQLBuilder<Self::Context, impl Operator>) -> Result;
@@ -219,14 +219,14 @@ impl SqlFragment for LinkSelector {
             E::Any => sql.wher("1"),
             E::None => sql.wher("0"),
             E::Key(s) => {
-                let mut key_sql = SQLBuilder::new_conjunct("key");
-                s.build_sql(&mut key_sql)?;
-                sql.extend(key_sql);
+                let mut inner_sql = SQLBuilder::new_conjunct(sql.context().0.to_owned());
+                s.build_sql(&mut inner_sql)?;
+                sql.extend(inner_sql);
             }
             E::Target(s) => {
-                let mut target_sql = SQLBuilder::new_conjunct("target");
-                s.build_sql(&mut target_sql)?;
-                sql.extend(target_sql);
+                let mut inner_sql = SQLBuilder::new_conjunct(sql.context().1.to_owned());
+                s.build_sql(&mut inner_sql)?;
+                sql.extend(inner_sql);
             }
             E::And(and) => {
                 for s in and {
@@ -287,6 +287,23 @@ impl SqlFragment for DataSelector {
             E::Text(s) => {
                 s.build_sql(sql)?;
             }
+            E::Linked(s) => {
+                let tbl = format!("{}_l", sql.context().replace('.', "_"));
+                let key_col = format!("{tbl}_k");
+                let target_col = format!("{tbl}_t");
+                let mut inner_sql = SQLBuilder::<(String, String)>::new_conjunct((
+                    key_col.to_owned(),
+                    target_col.to_owned(),
+                ));
+                inner_sql.select(&format!("`{tbl}`.`key_id` as `{key_col}`"));
+                inner_sql.select(&format!("`{tbl}`.`target_id` as `{target_col}`"));
+                inner_sql.from(&format!("`links` as `{tbl}`"));
+                inner_sql.wher(&format!("`{tbl}`.`source_id` == `{}`", sql.context()));
+                s.build_sql(&mut inner_sql)?;
+
+                sql.wher(&format!("EXISTS ({inner_sql})"));
+                sql.params.extend(inner_sql.params);
+            }
             _ => return Err(Error::InvalidQuery),
         }
         Ok(())
@@ -297,7 +314,7 @@ impl SqlFragment for TextSelector {
     type Context = String;
     #[inline]
     fn build_sql(&self, sql: &mut SQLBuilder<Self::Context, impl Operator>) -> Result {
-        let tbl = format!("{}_val", sql.context().replace('.', "_"));
+        let tbl = format!("{}_v", sql.context().replace('.', "_"));
         let mut inner_sql = SQLBuilder::<String>::new_conjunct(sql.context());
         inner_sql.from(&format!("`values` as `{tbl}`"));
         inner_sql.wher(&format!("`{tbl}`.`id` == `{}`", sql.context()));
@@ -332,5 +349,31 @@ pub fn build_link(builder: &mut dyn LinkBuilder, row: &Row, db: Database) {
         builder.push((key, target)).unwrap();
     } else {
         builder.push(target).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn complex() {
+        use datalink::query::prelude::*;
+
+        let query = Query::new(
+            Link::key(Data::text("foo"))
+                & Link::target(Data::text("%") & Data::linked(Link::key(Data::text("created_at")))),
+        );
+        dbg!(&query);
+
+        let sql = SQLBuilder::try_from(&query).unwrap();
+
+        dbg!(&sql);
+
+        let sql = sql.to_string();
+
+        dbg!(sql);
+
+        assert!(false)
     }
 }

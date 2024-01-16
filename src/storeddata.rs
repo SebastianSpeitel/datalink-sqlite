@@ -10,6 +10,7 @@ use datalink::{
 
 use crate::{
     database::Database,
+    error::Error,
     query::{build_link, SQLBuilder},
 };
 
@@ -88,18 +89,14 @@ impl Data for StoredData {
 
     fn query_links(&self, builder: &mut dyn LinkBuilder, query: &Query) -> Result<(), LBE> {
         let conn = self.db.conn.lock().unwrap();
-        let mut sql = SQLBuilder::try_from(query).map_err(|e| LBE::Other(Box::new(e)))?;
+        let mut sql = SQLBuilder::try_from(query)?;
         sql.wher("`links`.`source_id` == ?");
         sql.with(self.id.to_string());
 
         log::trace!("Running query: {:?}", &sql);
 
-        let mut stmt = sql
-            .prepare_cached(&conn)
-            .map_err(|e| LBE::Other(Box::new(e)))?;
-        let mut rows = stmt
-            .query(sql.params())
-            .map_err(|e| LBE::Other(Box::new(e)))?;
+        let mut stmt = sql.prepare_cached(&conn).map_err(Error::from)?;
+        let mut rows = stmt.query(sql.params()).map_err(Error::from)?;
 
         loop {
             match rows.next() {

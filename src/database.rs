@@ -11,29 +11,10 @@ use std::{
 };
 
 use crate::{
+    error::{Error, Result},
     query::{build_link, SQLBuilder},
     storeddata::StoredData,
 };
-
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error(transparent)]
-    Link(#[from] LBE),
-    #[error(transparent)]
-    Sql(#[from] rusqlite::Error),
-}
-
-impl From<Error> for LBE {
-    #[inline]
-    fn from(value: Error) -> Self {
-        match value {
-            Error::Link(e) => e,
-            Error::Sql(e) => LBE::Other(Box::new(e)),
-        }
-    }
-}
-
-pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 const INIT_DB: &str = include_str!("init_db.sql");
 const INSERT_VALUES: &str = "INSERT INTO `values` (id, bool, u8, i8, u16, i16, u32, i32, u64, i64, f32, f64, str)
@@ -58,7 +39,7 @@ impl Database {
     }
 
     #[inline]
-    pub fn init(&mut self) -> Result<()> {
+    pub fn init(&mut self) -> Result {
         self.conn
             .lock()
             .unwrap()
@@ -149,23 +130,13 @@ impl Data for Database {
     fn provide_links(&self, builder: &mut dyn LinkBuilder) -> Result<(), LBE> {
         let conn = self.conn.lock().unwrap();
         if let Some(path) = conn.path() {
-            builder
-                .push(("path", path.to_owned()))
-                .map_err(|e| LBE::Other(Box::new(e)))?;
+            builder.push(("path", path.to_owned()))?;
         }
 
-        builder
-            .push(("last_insert_rowid", conn.last_insert_rowid()))
-            .map_err(|e| LBE::Other(Box::new(e)))?;
-        builder
-            .push(("last_changes", conn.changes()))
-            .map_err(|e| LBE::Other(Box::new(e)))?;
-        builder
-            .push(("autocommit", conn.is_autocommit()))
-            .map_err(|e| LBE::Other(Box::new(e)))?;
-        builder
-            .push(("busy", conn.is_busy()))
-            .map_err(|e| LBE::Other(Box::new(e)))?;
+        builder.push(("last_insert_rowid", conn.last_insert_rowid()))?;
+        builder.push(("last_changes", conn.changes()))?;
+        builder.push(("autocommit", conn.is_autocommit()))?;
+        builder.push(("busy", conn.is_busy()))?;
         drop(conn);
 
         self.query_links(builder, &Default::default())
@@ -173,16 +144,12 @@ impl Data for Database {
 
     fn query_links(&self, builder: &mut dyn LinkBuilder, query: &Query) -> Result<(), LBE> {
         let conn = self.conn.lock().unwrap();
-        let sql = SQLBuilder::try_from(query).map_err(|e| LBE::Other(Box::new(e)))?;
+        let sql = SQLBuilder::try_from(query)?;
 
         log::trace!("Running query with: {:?}", &sql);
 
-        let mut stmt = sql
-            .prepare_cached(&conn)
-            .map_err(|e| LBE::Other(Box::new(e)))?;
-        let mut rows = stmt
-            .query(sql.params())
-            .map_err(|e| LBE::Other(Box::new(e)))?;
+        let mut stmt = sql.prepare_cached(&conn).map_err(Error::from)?;
+        let mut rows = stmt.query(sql.params()).map_err(Error::from)?;
 
         loop {
             match rows.next() {
@@ -232,13 +199,10 @@ impl LinkBuilder for Inserter<'_> {
             id.to_string()
         };
 
-        let mut stmt = self
-            .tx
-            .prepare_cached(INSERT_LINK)
-            .map_err(|e| LBE::Other(Box::new(e)))?;
+        let mut stmt = self.tx.prepare_cached(INSERT_LINK).map_err(Error::from)?;
 
         stmt.execute(params![self.source_id.to_string(), key_id, target_id,])
-            .map_err(|e| LBE::Other(Box::new(e)))?;
+            .map_err(Error::from)?;
 
         Ok(())
     }
@@ -300,6 +264,7 @@ mod tests {
         let db = test_db();
 
         let data = AlwaysUnique::<bool, _>::new_random(&true);
+
         db.store(&data).unwrap();
         let stored = db.store(&data).unwrap();
 

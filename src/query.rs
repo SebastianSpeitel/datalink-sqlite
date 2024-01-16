@@ -4,27 +4,16 @@ use std::{
 };
 
 use datalink::{
-    link_builder::{LinkBuilder, LinkBuilderError as LBE, LinkBuilderExt},
+    link_builder::{LinkBuilder, LinkBuilderExt},
     query::{DataSelector, LinkSelector, Query, TextSelector},
 };
 use rusqlite::{Row, ToSql};
 
 use crate::storeddata::StoredData;
-
-#[derive(thiserror::Error, Debug)]
-pub enum Error {
-    #[error("Invalid query")]
-    InvalidQuery,
-    #[error(transparent)]
-    Sqlite(#[from] rusqlite::Error),
-}
-
-impl From<Error> for LBE {
-    #[inline]
-    fn from(value: Error) -> Self {
-        Self::Other(Box::new(value))
-    }
-}
+use crate::{
+    database::Database,
+    error::{Error, Result},
+};
 
 pub trait Operator {
     fn op() -> &'static str;
@@ -189,33 +178,34 @@ impl<C: Debug, O: Operator> Debug for SQLBuilder<C, O> {
 }
 
 impl TryFrom<&Query> for SQLBuilder {
-    type Error = std::convert::Infallible;
+    type Error = Error;
 
     #[inline]
     fn try_from(query: &Query) -> Result<Self, Self::Error> {
         let mut sql = Self::default();
-        query.build_sql(&mut sql);
+        query.build_sql(&mut sql)?;
         Ok(sql)
     }
 }
 
 pub trait SqlFragment {
     type Context;
-    fn build_sql(&self, sql: &mut SQLBuilder<Self::Context, impl Operator>);
+    fn build_sql(&self, sql: &mut SQLBuilder<Self::Context, impl Operator>) -> Result;
 }
 
 impl SqlFragment for Query {
     type Context = ();
 
     #[inline]
-    fn build_sql(&self, sql: &mut SQLBuilder<Self::Context, impl Operator>) {
+    fn build_sql(&self, sql: &mut SQLBuilder<Self::Context, impl Operator>) -> Result {
         sql.select("`links`.`key_id` as `key`");
         sql.select("`links`.`target_id` as `target`");
         sql.from("`links`");
         let mut selector_sql =
             SQLBuilder::new_conjunct((String::from("key"), String::from("target")));
-        self.selector().build_sql(&mut selector_sql);
+        self.selector().build_sql(&mut selector_sql)?;
         sql.extend(selector_sql);
+        Ok(())
     }
 }
 
@@ -223,42 +213,43 @@ impl SqlFragment for LinkSelector {
     type Context = (String, String);
 
     #[inline]
-    fn build_sql(&self, sql: &mut SQLBuilder<Self::Context, impl Operator>) {
+    fn build_sql(&self, sql: &mut SQLBuilder<Self::Context, impl Operator>) -> Result {
         use LinkSelector as E;
         match self {
             E::Any => sql.wher("1"),
             E::None => sql.wher("0"),
             E::Key(s) => {
                 let mut key_sql = SQLBuilder::new_conjunct("key");
-                s.build_sql(&mut key_sql);
+                s.build_sql(&mut key_sql)?;
                 sql.extend(key_sql);
             }
             E::Target(s) => {
                 let mut target_sql = SQLBuilder::new_conjunct("target");
-                s.build_sql(&mut target_sql);
+                s.build_sql(&mut target_sql)?;
                 sql.extend(target_sql);
             }
             E::And(and) => {
                 for s in and {
-                    s.build_sql(sql);
+                    s.build_sql(sql)?;
                 }
             }
             E::Or(or) => {
                 let mut inner_sql = SQLBuilder::new_disjunct(sql.context().to_owned());
                 for s in or {
-                    s.build_sql(&mut inner_sql);
+                    s.build_sql(&mut inner_sql)?;
                 }
                 sql.extend(inner_sql);
             }
-            _ => unimplemented!("unsupported LinkSelector: {self:#?}"),
+            _ => return Err(Error::InvalidQuery),
         }
+        Ok(())
     }
 }
 
 impl SqlFragment for DataSelector {
     type Context = String;
     #[inline]
-    fn build_sql(&self, sql: &mut SQLBuilder<Self::Context, impl Operator>) {
+    fn build_sql(&self, sql: &mut SQLBuilder<Self::Context, impl Operator>) -> Result {
         use DataSelector as E;
         match self {
             E::Any => sql.wher("1"),
@@ -273,7 +264,7 @@ impl SqlFragment for DataSelector {
             }
             E::Not(s) => {
                 let mut inner_sql = SQLBuilder::new_conjunct(sql.context());
-                s.build_sql(&mut inner_sql);
+                s.build_sql(&mut inner_sql)?;
                 sql.select(&inner_sql.select);
                 sql.from(&inner_sql.from);
                 if !inner_sql.wher.is_empty() {
@@ -283,26 +274,29 @@ impl SqlFragment for DataSelector {
             }
             E::And(and) => {
                 for s in and {
-                    s.build_sql(sql);
+                    s.build_sql(sql)?;
                 }
             }
             E::Or(or) => {
                 let mut inner_sql = SQLBuilder::new_disjunct(sql.context());
                 for s in or {
-                    s.build_sql(&mut inner_sql);
+                    s.build_sql(&mut inner_sql)?;
                 }
                 sql.extend(inner_sql);
             }
-            E::Text(s) => s.build_sql(sql),
-            _ => unimplemented!("unsupported selector: {self:#?}"),
+            E::Text(s) => {
+                s.build_sql(sql)?;
+            }
+            _ => return Err(Error::InvalidQuery),
         }
+        Ok(())
     }
 }
 
 impl SqlFragment for TextSelector {
     type Context = String;
     #[inline]
-    fn build_sql(&self, sql: &mut SQLBuilder<Self::Context, impl Operator>) {
+    fn build_sql(&self, sql: &mut SQLBuilder<Self::Context, impl Operator>) -> Result {
         let tbl = format!("{}_val", sql.context().replace('.', "_"));
         let mut inner_sql = SQLBuilder::<String>::new_conjunct(sql.context());
         inner_sql.from(&format!("`values` as `{tbl}`"));
@@ -316,11 +310,12 @@ impl SqlFragment for TextSelector {
 
         sql.wher(&format!("EXISTS ({inner_sql})"));
         sql.params.extend(inner_sql.params);
+        Ok(())
     }
 }
 
 #[inline]
-pub fn build_link(builder: &mut dyn LinkBuilder, row: &Row, db: crate::database::Database) {
+pub fn build_link(builder: &mut dyn LinkBuilder, row: &Row, db: Database) {
     let key_id = row.get_ref("key").unwrap().as_str();
     let target_id = row.get_ref("target").unwrap().as_str().unwrap();
 

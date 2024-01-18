@@ -2,7 +2,7 @@
 #![allow(clippy::cast_sign_loss)]
 
 use datalink::{
-    link_builder::{LinkBuilder, LinkBuilderError as LBE},
+    links::{LinkError, Links},
     prelude::*,
     query::Query,
     value::ValueBuiler,
@@ -83,11 +83,11 @@ impl Data for StoredData {
     }
 
     #[inline]
-    fn provide_links(&self, builder: &mut dyn LinkBuilder) -> Result<(), LBE> {
-        self.query_links(builder, &Default::default())
+    fn provide_links(&self, links: &mut dyn Links) -> Result<(), LinkError> {
+        self.query_links(links, &Default::default())
     }
 
-    fn query_links(&self, builder: &mut dyn LinkBuilder, query: &Query) -> Result<(), LBE> {
+    fn query_links(&self, links: &mut dyn Links, query: &Query) -> Result<(), LinkError> {
         let conn = self.db.conn.lock().unwrap();
         let mut sql = SQLBuilder::try_from(query)?;
         sql.wher("`links`.`source_id` == ?");
@@ -100,12 +100,12 @@ impl Data for StoredData {
 
         loop {
             match rows.next() {
-                Err(e) => return Err(LBE::Other(Box::new(e))),
+                Err(e) => return Err(LinkError::other(e)),
                 Ok(None) => break,
-                Ok(Some(row)) => build_link(builder, row, self.db.clone()),
+                Ok(Some(row)) => build_link(links, row, self.db.clone()),
             }
         }
-        builder.end()
+        Ok(())
     }
 
     #[inline]

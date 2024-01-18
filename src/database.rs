@@ -1,5 +1,5 @@
 use datalink::{
-    link_builder::{LinkBuilder, LinkBuilderError as LBE, LinkBuilderExt},
+    links::{LinkError, Links, LinksExt},
     prelude::*,
     query::Query,
     value::Value,
@@ -96,12 +96,7 @@ impl Database {
 
         drop(stmt);
 
-        let mut inserter = Inserter {
-            tx,
-            source_id: id,
-            key: None,
-            target: None,
-        };
+        let mut inserter = Inserter { tx, source_id: id };
 
         data.provide_links(&mut inserter)?;
 
@@ -127,22 +122,22 @@ impl From<Connection> for Database {
 
 impl Data for Database {
     #[inline]
-    fn provide_links(&self, builder: &mut dyn LinkBuilder) -> Result<(), LBE> {
+    fn provide_links(&self, links: &mut dyn Links) -> Result<(), LinkError> {
         let conn = self.conn.lock().unwrap();
         if let Some(path) = conn.path() {
-            builder.push(("path", path.to_owned()))?;
+            links.push_link(("path", path.to_owned()))?;
         }
 
-        builder.push(("last_insert_rowid", conn.last_insert_rowid()))?;
-        builder.push(("last_changes", conn.changes()))?;
-        builder.push(("autocommit", conn.is_autocommit()))?;
-        builder.push(("busy", conn.is_busy()))?;
+        links.push_link(("last_insert_rowid", conn.last_insert_rowid()))?;
+        links.push_link(("last_changes", conn.changes()))?;
+        links.push_link(("autocommit", conn.is_autocommit()))?;
+        links.push_link(("busy", conn.is_busy()))?;
         drop(conn);
 
-        self.query_links(builder, &Default::default())
+        self.query_links(links, &Default::default())
     }
 
-    fn query_links(&self, builder: &mut dyn LinkBuilder, query: &Query) -> Result<(), LBE> {
+    fn query_links(&self, links: &mut dyn Links, query: &Query) -> Result<(), LinkError> {
         let conn = self.conn.lock().unwrap();
         let sql = SQLBuilder::try_from(query)?;
 
@@ -153,38 +148,24 @@ impl Data for Database {
 
         loop {
             match rows.next() {
-                Err(e) => return Err(LBE::Other(Box::new(e))),
+                Err(e) => return Err(LinkError::Other(Box::new(e))),
                 Ok(None) => break,
-                Ok(Some(row)) => build_link(builder, row, self.clone()),
+                Ok(Some(row)) => build_link(links, row, self.clone()),
             }
         }
-        builder.end()
+        Ok(())
     }
 }
 
 struct Inserter<'tx> {
     tx: &'tx rusqlite::Transaction<'tx>,
     source_id: ID,
-    key: Option<BoxedData>,
-    target: Option<BoxedData>,
 }
 
-impl LinkBuilder for Inserter<'_> {
+impl Links for Inserter<'_> {
     #[inline]
-    fn set_key(&mut self, key: BoxedData) {
-        self.key.replace(key);
-    }
-
-    #[inline]
-    fn set_target(&mut self, target: BoxedData) {
-        self.target.replace(target);
-    }
-
-    #[inline]
-    fn build(&mut self) -> Result<(), LBE> {
-        let key_id = self
-            .key
-            .take()
+    fn push(&mut self, target: BoxedData, key: Option<BoxedData>) -> Result<(), LinkError> {
+        let key_id = key
             .map(|k| {
                 let k = k.into_unique_random();
                 let id = Database::store_inner(self.tx, &k)?;
@@ -193,8 +174,7 @@ impl LinkBuilder for Inserter<'_> {
             .transpose()?;
 
         let target_id = {
-            let t = self.target.take().ok_or(LBE::MissingTarget)?;
-            let t = t.into_unique_random();
+            let t = target.into_unique_random();
             let id = Database::store_inner(self.tx, &t)?;
             id.to_string()
         };
@@ -204,11 +184,6 @@ impl LinkBuilder for Inserter<'_> {
         stmt.execute(params![self.source_id.to_string(), key_id, target_id,])
             .map_err(Error::from)?;
 
-        Ok(())
-    }
-
-    #[inline]
-    fn end(&mut self) -> Result<(), LBE> {
         Ok(())
     }
 }

@@ -1,20 +1,20 @@
-use datalink::link_builder::LinkBuilderError;
+use datalink::links::LinkError;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("Invalid query")]
     InvalidQuery,
     #[error(transparent)]
-    LinkBuilder(#[from] LinkBuilderError),
+    DataLink(#[from] LinkError),
     #[error(transparent)]
     Sql(#[from] rusqlite::Error),
 }
 
-impl From<Error> for LinkBuilderError {
+impl From<Error> for LinkError {
     #[inline]
     fn from(value: Error) -> Self {
         match value {
-            Error::LinkBuilder(lbe) => lbe,
+            Error::DataLink(lbe) => lbe,
             e => Self::Other(Box::new(e)),
         }
     }

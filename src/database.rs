@@ -1,5 +1,5 @@
 use datalink::{
-    links::{LinkError, Links, LinksExt},
+    links::prelude::{Result as LResult, *},
     prelude::*,
     query::Query,
     value::Value,
@@ -22,8 +22,10 @@ VALUES (?, ? ,? ,? ,? ,? ,? ,? ,? ,? ,? ,? ,?)
 ON CONFLICT(id)
 DO UPDATE
 SET bool=excluded.bool, u8=excluded.u8, i8=excluded.i8, u16=excluded.u16, i16=excluded.i16, u32=excluded.u32, i32=excluded.i32, u64=excluded.u64, i64=excluded.i64, f32=excluded.f32, f64=excluded.f64, str=excluded.str;";
-const INSERT_LINK: &str = "INSERT INTO `links` (source_id, key_id, target_id)
+const INSERT_LINK_KEYED: &str = "INSERT INTO `links` (source_id, target_id, key_id)
 VALUES (?, ?, ?);";
+const INSERT_LINK_UNKEYED: &str = "INSERT INTO `links` (source_id, target_id)
+VALUES (?, ?);";
 
 #[derive(Clone)]
 pub struct Database {
@@ -63,16 +65,16 @@ impl Database {
     pub fn store<D: Unique + ?Sized>(&self, data: &D) -> Result<StoredData> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
-        let id = Self::store_inner(&tx, data)?;
+        Self::store_inner(&tx, data)?;
         tx.commit()?;
         Ok(StoredData {
             db: self.clone(),
-            id,
+            id: data.id(),
         })
     }
 
     #[inline]
-    fn store_inner<D: Unique + ?Sized>(tx: &Transaction, data: &D) -> Result<ID> {
+    fn store_inner<D: Unique + ?Sized>(tx: &Transaction, data: &D) -> Result<()> {
         let mut stmt = tx.prepare_cached(INSERT_VALUES)?;
 
         let id = data.id();
@@ -100,7 +102,7 @@ impl Database {
 
         data.provide_links(&mut inserter)?;
 
-        Ok(id)
+        Ok(())
     }
 
     #[inline]
@@ -148,12 +150,15 @@ impl Data for Database {
 
         loop {
             match rows.next() {
-                Err(e) => return Err(LinkError::Other(Box::new(e))),
-                Ok(None) => break,
-                Ok(Some(row)) => build_link(links, row, self.clone()),
+                Err(e) => break Err(LinkError::Other(Box::new(e))),
+                Ok(None) => break Ok(()),
+                Ok(Some(row)) => {
+                    if build_link(links, row, self.clone()).is_break() {
+                        break Ok(());
+                    }
+                }
             }
         }
-        Ok(())
     }
 }
 
@@ -164,27 +169,48 @@ struct Inserter<'tx> {
 
 impl Links for Inserter<'_> {
     #[inline]
-    fn push(&mut self, target: BoxedData, key: Option<BoxedData>) -> Result<(), LinkError> {
-        let key_id = key
-            .map(|k| {
-                let k = k.into_unique_random();
-                let id = Database::store_inner(self.tx, &k)?;
-                Ok::<_, Error>(id.to_string())
-            })
-            .transpose()?;
+    fn push_unkeyed(&mut self, target: BoxedData) -> LResult {
+        let target = target.into_unique_random();
+        Database::store_inner(&self.tx, &target)?;
+        let target_id = target.id().to_string();
 
-        let target_id = {
-            let t = target.into_unique_random();
-            let id = Database::store_inner(self.tx, &t)?;
-            id.to_string()
-        };
+        let mut stmt = self
+            .tx
+            .prepare_cached(INSERT_LINK_UNKEYED)
+            .map_err(LinkError::other)?;
+        stmt.execute([self.source_id.to_string(), target_id])
+            .map_err(LinkError::other)?;
 
-        let mut stmt = self.tx.prepare_cached(INSERT_LINK).map_err(Error::from)?;
+        CONTINUE
+    }
 
-        stmt.execute(params![self.source_id.to_string(), key_id, target_id,])
-            .map_err(Error::from)?;
+    #[inline]
+    fn push_keyed(&mut self, target: BoxedData, key: BoxedData) -> LResult {
+        let target = target.into_unique_random();
+        Database::store_inner(&self.tx, &target)?;
+        let target_id = target.id().to_string();
 
-        Ok(())
+        let key = key.into_unique_random();
+        Database::store_inner(&self.tx, &key)?;
+        let key_id = target.id().to_string();
+
+        let mut stmt = self
+            .tx
+            .prepare_cached(INSERT_LINK_KEYED)
+            .map_err(LinkError::other)?;
+        stmt.execute([self.source_id.to_string(), target_id, key_id])
+            .map_err(LinkError::other)?;
+
+        CONTINUE
+    }
+
+    #[inline]
+    fn push(&mut self, target: BoxedData, key: Option<BoxedData>) -> LResult {
+        if let Some(key) = key {
+            self.push_keyed(target, key)
+        } else {
+            self.push_unkeyed(target)
+        }
     }
 }
 
@@ -235,10 +261,9 @@ mod tests {
 
     #[test]
     fn insert_unique() {
-        use datalink::data::unique::AlwaysUnique;
         let db = test_db();
 
-        let data = AlwaysUnique::<bool, _>::new_random(&true);
+        let data = true.into_unique_random();
 
         db.store(&data).unwrap();
         let stored = db.store(&data).unwrap();

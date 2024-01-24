@@ -1,6 +1,7 @@
 use std::{
     fmt::{Debug, Display, Write},
     marker::PhantomData,
+    ops::ControlFlow,
 };
 
 use datalink::{
@@ -332,7 +333,7 @@ impl SqlFragment for TextSelector {
 }
 
 #[inline]
-pub fn build_link(links: &mut dyn Links, row: &Row, db: Database) {
+pub fn build_link(links: &mut dyn Links, row: &Row, db: Database) -> ControlFlow<()> {
     let key_id = row.get_ref("key").unwrap().as_str();
     let target_id = row.get_ref("target").unwrap().as_str().unwrap();
 
@@ -346,9 +347,9 @@ pub fn build_link(links: &mut dyn Links, row: &Row, db: Database) {
             db,
             id: key.parse().unwrap(),
         };
-        links.push_keyed(Box::new(key), Box::new(target)).unwrap();
+        links.push_keyed(Box::new(key), Box::new(target)).unwrap()
     } else {
-        links.push_unkeyed(Box::new(target)).unwrap();
+        links.push_unkeyed(Box::new(target)).unwrap()
     }
 }
 

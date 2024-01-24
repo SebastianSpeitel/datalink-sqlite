@@ -100,12 +100,15 @@ impl Data for StoredData {
 
         loop {
             match rows.next() {
-                Err(e) => return Err(LinkError::other(e)),
-                Ok(None) => break,
-                Ok(Some(row)) => build_link(links, row, self.db.clone()),
+                Err(e) => break Err(LinkError::other(e)),
+                Ok(None) => break Ok(()),
+                Ok(Some(row)) => {
+                    if build_link(links, row, self.db.clone()).is_break() {
+                        return Ok(());
+                    }
+                }
             }
         }
-        Ok(())
     }
 
     #[inline]

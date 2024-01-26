@@ -259,6 +259,8 @@ impl SqlFragment for DataSelector {
                 sql.wher(&format!("`{}` == ?", sql.context()));
                 sql.with(id.to_string());
             }
+            // Stored Data is always unique
+            E::Unique => sql.wher("1"),
             E::NotId(id) => {
                 sql.wher(&format!("`{}` != ?", sql.context()));
                 sql.with(id.to_string());

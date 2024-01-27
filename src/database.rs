@@ -12,7 +12,7 @@ use std::{
 
 use crate::{
     error::{Error, Result},
-    query::{build_link, SQLBuilder},
+    query::{build_links, SQLBuilder, SqlFragment},
     storeddata::StoredData,
 };
 
@@ -41,7 +41,7 @@ impl Database {
     }
 
     #[inline]
-    pub fn init(&mut self) -> Result {
+    pub fn init(&self) -> Result {
         self.conn
             .lock()
             .unwrap()
@@ -140,25 +140,22 @@ impl Data for Database {
     }
 
     fn query_links(&self, links: &mut dyn Links, query: &Query) -> Result<(), LinkError> {
-        let conn = self.conn.lock().unwrap();
-        let sql = SQLBuilder::try_from(query)?;
+        let context = ("values".into(), "id".into(), "id".into());
+        let mut sql = SQLBuilder::new_conjunct(context);
+        // Ensure column #0 is the ID
+        sql.select("`values`.`id`");
+        query.build_sql(&mut sql)?;
 
-        log::trace!("Running query with: {:?}", &sql);
+        build_links(self, &sql, links, |r| {
+            let id = r
+                .get_ref(0)?
+                .as_str()?
+                .parse::<ID>()
+                .map_err(|_| Error::InvalidID)?;
+            Ok(self.get(id))
+        })?;
 
-        let mut stmt = sql.prepare_cached(&conn).map_err(Error::from)?;
-        let mut rows = stmt.query(sql.params()).map_err(Error::from)?;
-
-        loop {
-            match rows.next() {
-                Err(e) => break Err(LinkError::Other(Box::new(e))),
-                Ok(None) => break Ok(()),
-                Ok(Some(row)) => {
-                    if build_link(links, row, self.clone()).is_break() {
-                        break Ok(());
-                    }
-                }
-            }
-        }
+        Ok(())
     }
 }
 
@@ -171,7 +168,7 @@ impl Links for Inserter<'_> {
     #[inline]
     fn push_unkeyed(&mut self, target: BoxedData) -> LResult {
         let target = target.into_unique_random();
-        Database::store_inner(&self.tx, &target)?;
+        Database::store_inner(self.tx, &target)?;
         let target_id = target.id().to_string();
 
         let mut stmt = self
@@ -187,11 +184,11 @@ impl Links for Inserter<'_> {
     #[inline]
     fn push_keyed(&mut self, target: BoxedData, key: BoxedData) -> LResult {
         let target = target.into_unique_random();
-        Database::store_inner(&self.tx, &target)?;
+        Database::store_inner(self.tx, &target)?;
         let target_id = target.id().to_string();
 
         let key = key.into_unique_random();
-        Database::store_inner(&self.tx, &key)?;
+        Database::store_inner(self.tx, &key)?;
         let key_id = key.id().to_string();
 
         let mut stmt = self
@@ -220,7 +217,7 @@ mod tests {
     use datalink::data::DataExt;
 
     fn test_db() -> Database {
-        let mut db = Database::open_in_memory().unwrap();
+        let db = Database::open_in_memory().unwrap();
         db.init().unwrap();
         db
     }

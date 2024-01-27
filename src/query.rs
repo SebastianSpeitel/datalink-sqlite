@@ -1,16 +1,14 @@
 use std::{
     fmt::{Debug, Display, Write},
     marker::PhantomData,
-    ops::ControlFlow,
 };
 
 use datalink::{
-    links::Links,
+    links::prelude::*,
     query::{DataSelector, LinkSelector, Query, TextSelector},
 };
 use rusqlite::{Row, ToSql};
 
-use crate::storeddata::StoredData;
 use crate::{
     database::Database,
     error::{Error, Result},
@@ -45,17 +43,6 @@ pub struct SQLBuilder<C = (), Op: Operator = Conjunction> {
     wher: String,
     params: Vec<Box<dyn ToSql>>,
     op: PhantomData<Op>,
-}
-
-impl TryFrom<&Query> for SQLBuilder {
-    type Error = Error;
-
-    #[inline]
-    fn try_from(query: &Query) -> Result<Self, Self::Error> {
-        let mut sql = Self::default();
-        query.build_sql(&mut sql)?;
-        Ok(sql)
-    }
 }
 
 impl<C> SQLBuilder<C> {
@@ -98,34 +85,34 @@ impl<C, O: Operator> SQLBuilder<C, O> {
     }
 
     #[inline]
-    pub fn select(&mut self, select: &str) {
-        if select.is_empty() {
+    pub fn select(&mut self, select: impl AsRef<str>) {
+        if select.as_ref().is_empty() {
             return;
         }
         if !self.select.is_empty() {
             self.select.push_str(", ");
         }
-        self.select.push_str(select);
+        self.select.push_str(select.as_ref());
     }
     #[inline]
-    pub fn from(&mut self, from: &str) {
-        if from.is_empty() {
+    pub fn from(&mut self, from: impl AsRef<str>) {
+        if from.as_ref().is_empty() {
             return;
         }
         if !self.from.is_empty() {
             self.from.push_str(", ");
         }
-        self.from.push_str(from);
+        self.from.push_str(from.as_ref());
     }
     #[inline]
-    pub fn wher(&mut self, wher: &str) {
-        if wher.is_empty() {
+    pub fn wher(&mut self, wher: impl AsRef<str>) {
+        if wher.as_ref().is_empty() {
             return;
         }
         if !self.wher.is_empty() {
             self.wher.push_str(O::op());
         }
-        self.wher.push_str(wher);
+        self.wher.push_str(wher.as_ref());
     }
     #[inline]
     pub fn with(&mut self, param: (impl ToSql + 'static)) {
@@ -195,15 +182,17 @@ pub trait SqlFragment {
 }
 
 impl SqlFragment for Query {
-    type Context = ();
+    type Context = (String, String, String);
 
     #[inline]
     fn build_sql(&self, sql: &mut SQLBuilder<Self::Context, impl Operator>) -> Result {
-        sql.select("`links`.`key_id` as `key`");
-        sql.select("`links`.`target_id` as `target`");
-        sql.from("`links`");
-        let mut selector_sql =
-            SQLBuilder::new_conjunct((String::from("key"), String::from("target")));
+        let (tab, key_col, target_col) = sql.context().to_owned();
+        let key = format!("{tab}_k");
+        let target = format!("{tab}_t");
+        sql.select(format!("`{tab}`.`{key_col}` as `{key}`"));
+        sql.select(format!("`{tab}`.`{target_col}` as `{target}`"));
+        sql.from(format!("`{tab}`"));
+        let mut selector_sql = SQLBuilder::new_conjunct((key, target));
         self.selector().build_sql(&mut selector_sql)?;
         sql.extend(selector_sql);
         Ok(())
@@ -220,12 +209,12 @@ impl SqlFragment for LinkSelector {
             E::Any => sql.wher("1"),
             E::None => sql.wher("0"),
             E::Key(s) => {
-                let mut inner_sql = SQLBuilder::new_conjunct(sql.context().0.to_owned());
+                let mut inner_sql = SQLBuilder::new_conjunct(sql.context().0.clone());
                 s.build_sql(&mut inner_sql)?;
                 sql.extend(inner_sql);
             }
             E::Target(s) => {
-                let mut inner_sql = SQLBuilder::new_conjunct(sql.context().1.to_owned());
+                let mut inner_sql = SQLBuilder::new_conjunct(sql.context().1.clone());
                 s.build_sql(&mut inner_sql)?;
                 sql.extend(inner_sql);
             }
@@ -235,7 +224,7 @@ impl SqlFragment for LinkSelector {
                 }
             }
             E::Or(or) => {
-                let mut inner_sql = SQLBuilder::new_disjunct(sql.context().to_owned());
+                let mut inner_sql = SQLBuilder::new_disjunct(sql.context().clone());
                 for s in or {
                     s.build_sql(&mut inner_sql)?;
                 }
@@ -256,13 +245,13 @@ impl SqlFragment for DataSelector {
             E::Any => sql.wher("1"),
             E::None => sql.wher("0"),
             E::Id(id) => {
-                sql.wher(&format!("`{}` == ?", sql.context()));
+                sql.wher(format!("`{}` == ?", sql.context()));
                 sql.with(id.to_string());
             }
             // Stored Data is always unique
             E::Unique => sql.wher("1"),
             E::NotId(id) => {
-                sql.wher(&format!("`{}` != ?", sql.context()));
+                sql.wher(format!("`{}` != ?", sql.context()));
                 sql.with(id.to_string());
             }
             E::Not(s) => {
@@ -271,7 +260,7 @@ impl SqlFragment for DataSelector {
                 sql.select(&inner_sql.select);
                 sql.from(&inner_sql.from);
                 if !inner_sql.wher.is_empty() {
-                    sql.wher(&format!("NOT ({})", inner_sql.wher));
+                    sql.wher(format!("NOT ({})", inner_sql.wher));
                 }
                 sql.params.extend(inner_sql.params);
             }
@@ -295,16 +284,16 @@ impl SqlFragment for DataSelector {
                 let key_col = format!("{tbl}_k");
                 let target_col = format!("{tbl}_t");
                 let mut inner_sql = SQLBuilder::<(String, String)>::new_conjunct((
-                    key_col.to_owned(),
-                    target_col.to_owned(),
+                    key_col.clone(),
+                    target_col.clone(),
                 ));
-                inner_sql.select(&format!("`{tbl}`.`key_id` as `{key_col}`"));
-                inner_sql.select(&format!("`{tbl}`.`target_id` as `{target_col}`"));
-                inner_sql.from(&format!("`links` as `{tbl}`"));
-                inner_sql.wher(&format!("`{tbl}`.`source_id` == `{}`", sql.context()));
+                inner_sql.select(format!("`{tbl}`.`key_id` as `{key_col}`"));
+                inner_sql.select(format!("`{tbl}`.`target_id` as `{target_col}`"));
+                inner_sql.from(format!("`links` as `{tbl}`"));
+                inner_sql.wher(format!("`{tbl}`.`source_id` == `{}`", sql.context()));
                 s.build_sql(&mut inner_sql)?;
 
-                sql.wher(&format!("EXISTS ({inner_sql})"));
+                sql.wher(format!("EXISTS ({inner_sql})"));
                 sql.params.extend(inner_sql.params);
             }
             _ => return Err(Error::InvalidQuery),
@@ -319,39 +308,49 @@ impl SqlFragment for TextSelector {
     fn build_sql(&self, sql: &mut SQLBuilder<Self::Context, impl Operator>) -> Result {
         let tbl = format!("{}_v", sql.context().replace('.', "_"));
         let mut inner_sql = SQLBuilder::<String>::new_conjunct(sql.context());
-        inner_sql.from(&format!("`values` as `{tbl}`"));
-        inner_sql.wher(&format!("`{tbl}`.`id` == `{}`", sql.context()));
+        inner_sql.from(format!("`values` as `{tbl}`"));
+        inner_sql.wher(format!("`{tbl}`.`id` == `{}`", sql.context()));
 
         {
             let Self { search } = self;
-            inner_sql.wher(&format!("`{tbl}`.`str` LIKE ?"));
+            inner_sql.wher(format!("`{tbl}`.`str` LIKE ?"));
             inner_sql.with(search.to_owned());
         }
 
-        sql.wher(&format!("EXISTS ({inner_sql})"));
+        sql.wher(format!("EXISTS ({inner_sql})"));
         sql.params.extend(inner_sql.params);
         Ok(())
     }
 }
 
 #[inline]
-pub fn build_link(links: &mut dyn Links, row: &Row, db: Database) -> ControlFlow<()> {
-    let key_id = row.get_ref("key").unwrap().as_str();
-    let target_id = row.get_ref("target").unwrap().as_str().unwrap();
+pub fn build_links<L, C: Debug>(
+    db: &Database,
+    sql: &SQLBuilder<C>,
+    links: &mut (impl Links + ?Sized),
+    f: impl Fn(&Row) -> Result<L>,
+) -> Result
+where
+    L: Link,
+    L::Key: Sized + 'static,
+    L::Target: Sized + 'static,
+{
+    log::trace!("Building links from: {:?}", &sql);
+    let conn = db.conn.lock().unwrap();
 
-    let target = StoredData {
-        db: db.clone(),
-        id: target_id.parse().unwrap(),
-    };
+    let mut stmt = sql.prepare_cached(&conn)?;
 
-    if let Ok(key) = key_id {
-        let key = StoredData {
-            db,
-            id: key.parse().unwrap(),
-        };
-        links.push_keyed(Box::new(key), Box::new(target)).unwrap()
-    } else {
-        links.push_unkeyed(Box::new(target)).unwrap()
+    let mut rows = stmt.query(sql.params())?;
+
+    loop {
+        match rows.next()? {
+            None => break Ok(()),
+            Some(r) => {
+                if f(r)?.build_into(links)?.is_break() {
+                    break Ok(());
+                }
+            }
+        }
     }
 }
 
@@ -369,7 +368,9 @@ mod tests {
         );
         dbg!(&query);
 
-        let sql = SQLBuilder::try_from(&query).unwrap();
+        let mut sql =
+            SQLBuilder::new_conjunct(("links".into(), "key_id".into(), "target_id".into()));
+        query.build_sql(&mut sql).unwrap();
 
         dbg!(&sql);
 

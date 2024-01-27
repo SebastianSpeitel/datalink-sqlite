@@ -4,17 +4,21 @@ use datalink::links::LinkError;
 pub enum Error {
     #[error("Invalid query")]
     InvalidQuery,
+    #[error("Invalid ID")]
+    InvalidID,
     #[error(transparent)]
     DataLink(#[from] LinkError),
     #[error(transparent)]
     Sql(#[from] rusqlite::Error),
+    #[error(transparent)]
+    FromSql(#[from] rusqlite::types::FromSqlError),
 }
 
 impl From<Error> for LinkError {
     #[inline]
     fn from(value: Error) -> Self {
         match value {
-            Error::DataLink(lbe) => lbe,
+            Error::DataLink(e) => e,
             e => Self::Other(Box::new(e)),
         }
     }

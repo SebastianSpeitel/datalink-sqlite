@@ -1,17 +1,12 @@
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::cast_sign_loss)]
 
-use datalink::{
-    links::{LinkError, Links},
-    prelude::*,
-    query::Query,
-    value::ValueBuiler,
-};
+use datalink::{links::prelude::*, prelude::*, query::Query, value::ValueBuiler};
 
 use crate::{
     database::Database,
     error::Error,
-    query::{build_link, SQLBuilder},
+    query::{build_links, SQLBuilder, SqlFragment},
 };
 
 pub struct StoredData {
@@ -88,27 +83,39 @@ impl Data for StoredData {
     }
 
     fn query_links(&self, links: &mut dyn Links, query: &Query) -> Result<(), LinkError> {
-        let conn = self.db.conn.lock().unwrap();
-        let mut sql = SQLBuilder::try_from(query)?;
+        // TODO: when Links provide a way to tell if they need key, target or both
+        // we can optimize this query to only select and convert the needed columns to StoredData
+
+        let context = ("links".into(), "key_id".into(), "target_id".into());
+        let mut sql = SQLBuilder::new_conjunct(context);
+        // Ensure column #0 and #1 are the key and target IDs
+        sql.select("`links`.`key_id`"); // Column #0
+        sql.select("`links`.`target_id`"); // Column #1
         sql.wher("`links`.`source_id` == ?");
         sql.with(self.id.to_string());
+        query.build_sql(&mut sql)?;
 
-        log::trace!("Running query: {:?}", &sql);
+        build_links(&self.db, &sql, links, |r| {
+            let key = r
+                .get_ref(0)?
+                .as_str_or_null()?
+                .map(|id| id.parse())
+                .transpose()
+                .map_err(|_| Error::InvalidID)?
+                .map(|id| self.db.get(id));
 
-        let mut stmt = sql.prepare_cached(&conn).map_err(Error::from)?;
-        let mut rows = stmt.query(sql.params()).map_err(Error::from)?;
+            let target_id = r
+                .get_ref(1)?
+                .as_str()?
+                .parse()
+                .map_err(|_| Error::InvalidID)?;
+            let target = self.db.get(target_id);
 
-        loop {
-            match rows.next() {
-                Err(e) => break Err(LinkError::other(e)),
-                Ok(None) => break Ok(()),
-                Ok(Some(row)) => {
-                    if build_link(links, row, self.db.clone()).is_break() {
-                        return Ok(());
-                    }
-                }
-            }
-        }
+            let link = MaybeKeyed::new(key, target);
+            Ok(link)
+        })?;
+
+        Ok(())
     }
 
     #[inline]

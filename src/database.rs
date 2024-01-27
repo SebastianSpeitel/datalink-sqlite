@@ -192,7 +192,7 @@ impl Links for Inserter<'_> {
 
         let key = key.into_unique_random();
         Database::store_inner(&self.tx, &key)?;
-        let key_id = target.id().to_string();
+        let key_id = key.id().to_string();
 
         let mut stmt = self
             .tx

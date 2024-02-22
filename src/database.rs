@@ -63,6 +63,7 @@ impl Database {
 
     #[inline]
     pub fn store<D: Unique + ?Sized>(&self, data: &D) -> Result<StoredData> {
+        debug_assert!(self.is_initialized());
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         Self::store_inner(&tx, data)?;
@@ -112,6 +113,31 @@ impl Database {
             db: self.clone(),
             id,
         }
+    }
+
+    fn is_initialized(&self) -> bool {
+        let conn = self.conn.lock().unwrap();
+
+        const VALUES_COL_COUNT: &str = "SELECT COUNT(*) FROM pragma_table_info('values');";
+        const LINKS_COL_COUNT: &str = "SELECT COUNT(*) FROM pragma_table_info('links');";
+
+        let values_col_count: u32 = conn
+            .query_row(VALUES_COL_COUNT, [], |r| r.get(0))
+            .unwrap_or_default();
+
+        if values_col_count != 13 {
+            return false;
+        }
+
+        let links_col_count: u32 = conn
+            .query_row(LINKS_COL_COUNT, [], |r| r.get(0))
+            .unwrap_or_default();
+
+        if links_col_count != 3 {
+            return false;
+        }
+
+        true
     }
 }
 

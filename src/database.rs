@@ -46,19 +46,19 @@ impl Database {
             .lock()
             .unwrap()
             .execute_batch(INIT_DB)
-            .map_err(Error::from)
+            .map_err(From::from)
     }
 
     #[inline]
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        Connection::open(path).map(Self::new).map_err(Error::from)
+        Connection::open(path).map(Self::new).map_err(From::from)
     }
 
     #[inline]
     pub fn open_in_memory() -> Result<Self> {
         Connection::open_in_memory()
             .map(Self::new)
-            .map_err(Error::from)
+            .map_err(From::from)
     }
 
     #[inline]
@@ -116,10 +116,10 @@ impl Database {
     }
 
     fn is_initialized(&self) -> bool {
-        let conn = self.conn.lock().unwrap();
-
         const VALUES_COL_COUNT: &str = "SELECT COUNT(*) FROM pragma_table_info('values');";
         const LINKS_COL_COUNT: &str = "SELECT COUNT(*) FROM pragma_table_info('links');";
+
+        let conn = self.conn.lock().unwrap();
 
         let values_col_count: u32 = conn
             .query_row(VALUES_COL_COUNT, [], |r| r.get(0))
@@ -299,8 +299,5 @@ mod tests {
     fn uninitialized() {
         let db = Database::open_in_memory().unwrap();
         let _ = db.store(&true.into_unique_random()).unwrap();
-
-        #[cfg(not(debug_assertions))]
-        panic!("Would have paniced");
     }
 }

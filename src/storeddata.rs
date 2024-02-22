@@ -99,7 +99,7 @@ impl Data for StoredData {
             let key = r
                 .get_ref(0)?
                 .as_str_or_null()?
-                .map(|id| id.parse())
+                .map(str::parse)
                 .transpose()
                 .map_err(|_| Error::InvalidID)?
                 .map(|id| self.db.get(id));

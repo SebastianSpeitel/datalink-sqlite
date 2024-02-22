@@ -293,4 +293,14 @@ mod tests {
 
         assert_eq!(true, stored.as_bool().unwrap());
     }
+
+    #[test]
+    #[should_panic]
+    fn uninitialized() {
+        let db = Database::open_in_memory().unwrap();
+        let _ = db.store(&true.into_unique_random()).unwrap();
+
+        #[cfg(not(debug_assertions))]
+        panic!("Would have paniced");
+    }
 }

@@ -5,7 +5,7 @@ use std::{
 
 use datalink::{
     links::prelude::*,
-    query::{DataSelector, LinkSelector, Query, TextSelector},
+    query::{prelude::Text as TextFilter, DataFilter, LinkFilter, Query},
 };
 use rusqlite::{Row, ToSql};
 
@@ -193,18 +193,18 @@ impl SqlFragment for Query {
         sql.select(format!("`{tab}`.`{target_col}` as `{target}`"));
         sql.from(format!("`{tab}`"));
         let mut selector_sql = SQLBuilder::new_conjunct((key, target));
-        self.selector().build_sql(&mut selector_sql)?;
+        self.filter().build_sql(&mut selector_sql)?;
         sql.extend(selector_sql);
         Ok(())
     }
 }
 
-impl SqlFragment for LinkSelector {
+impl SqlFragment for LinkFilter {
     type Context = (String, String);
 
     #[inline]
     fn build_sql(&self, sql: &mut SQLBuilder<Self::Context, impl Operator>) -> Result {
-        use LinkSelector as E;
+        use LinkFilter as E;
         match self {
             E::Any => sql.wher("1"),
             E::None => sql.wher("0"),
@@ -219,13 +219,13 @@ impl SqlFragment for LinkSelector {
                 sql.extend(inner_sql);
             }
             E::And(and) => {
-                for s in and {
+                for s in and.iter() {
                     s.build_sql(sql)?;
                 }
             }
             E::Or(or) => {
                 let mut inner_sql = SQLBuilder::new_disjunct(sql.context().clone());
-                for s in or {
+                for s in or.iter() {
                     s.build_sql(&mut inner_sql)?;
                 }
                 sql.extend(inner_sql);
@@ -236,11 +236,11 @@ impl SqlFragment for LinkSelector {
     }
 }
 
-impl SqlFragment for DataSelector {
+impl SqlFragment for DataFilter {
     type Context = String;
     #[inline]
     fn build_sql(&self, sql: &mut SQLBuilder<Self::Context, impl Operator>) -> Result {
-        use DataSelector as E;
+        use DataFilter as E;
         match self {
             E::Any => sql.wher("1"),
             E::None => sql.wher("0"),
@@ -256,7 +256,8 @@ impl SqlFragment for DataSelector {
             }
             E::Not(s) => {
                 let mut inner_sql = SQLBuilder::new_conjunct(sql.context());
-                s.build_sql(&mut inner_sql)?;
+
+                s.0.build_sql(&mut inner_sql)?;
                 sql.select(&inner_sql.select);
                 sql.from(&inner_sql.from);
                 if !inner_sql.wher.is_empty() {
@@ -265,13 +266,13 @@ impl SqlFragment for DataSelector {
                 sql.params.extend(inner_sql.params);
             }
             E::And(and) => {
-                for s in and {
+                for s in and.iter() {
                     s.build_sql(sql)?;
                 }
             }
             E::Or(or) => {
                 let mut inner_sql = SQLBuilder::new_disjunct(sql.context());
-                for s in or {
+                for s in or.iter() {
                     s.build_sql(&mut inner_sql)?;
                 }
                 sql.extend(inner_sql);
@@ -302,7 +303,7 @@ impl SqlFragment for DataSelector {
     }
 }
 
-impl SqlFragment for TextSelector {
+impl SqlFragment for TextFilter {
     type Context = String;
     #[inline]
     fn build_sql(&self, sql: &mut SQLBuilder<Self::Context, impl Operator>) -> Result {
@@ -312,9 +313,12 @@ impl SqlFragment for TextSelector {
         inner_sql.wher(format!("`{tbl}`.`id` == `{}`", sql.context()));
 
         {
-            let Self { search } = self;
-            inner_sql.wher(format!("`{tbl}`.`str` LIKE ?"));
-            inner_sql.with(search.to_owned());
+            if let Some(search) = self.exact() {
+                inner_sql.wher(format!("`{tbl}`.`str` LIKE ?"));
+                inner_sql.with(search.to_owned());
+            } else {
+                return Err(Error::InvalidQuery);
+            }
         }
 
         sql.wher(format!("EXISTS ({inner_sql})"));

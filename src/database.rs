@@ -16,7 +16,12 @@ use crate::{
     storeddata::StoredData,
 };
 
-const INIT_DB: &str = include_str!("init_db.sql");
+const INIT_DB: &str = concat!(
+    include_str!("init_db.sql"),
+    "PRAGMA user_version = ",
+    crate::schema_version!(),
+    ";"
+);
 const INSERT_VALUES: &str = "INSERT INTO `values` (id, bool, u8, i8, u16, i16, u32, i32, u64, i64, f32, f64, str)
 VALUES (?, ? ,? ,? ,? ,? ,? ,? ,? ,? ,? ,? ,?)
 ON CONFLICT(id)
@@ -42,11 +47,27 @@ impl Database {
 
     #[inline]
     pub fn init(&self) -> Result {
-        self.conn
-            .lock()
-            .unwrap()
-            .execute_batch(INIT_DB)
-            .map_err(From::from)
+        log::info!("Initializing");
+        self.conn.lock().unwrap().execute_batch(INIT_DB)?;
+        debug_assert!(self.is_ready());
+        log::debug!("Initialized");
+        Ok(())
+    }
+
+    #[cfg(feature = "migrations")]
+    #[inline]
+    pub fn migrate(&self) -> Result {
+        log::info!("Migrating");
+        crate::migration::Migrations::new(self).run_all()
+    }
+
+    #[inline]
+    pub fn schema_version(&self) -> Result<i32> {
+        const SQL: &str = "SELECT user_version FROM pragma_user_version();";
+
+        let conn = self.conn.lock().unwrap();
+        let version = conn.query_row(SQL, [], |r| r.get(0))?;
+        Ok(version)
     }
 
     #[inline]
@@ -63,7 +84,7 @@ impl Database {
 
     #[inline]
     pub fn store<D: Unique + ?Sized>(&self, data: &D) -> Result<StoredData> {
-        debug_assert!(self.is_initialized());
+        debug_assert!(self.is_ready());
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         Self::store_inner(&tx, data)?;
@@ -115,11 +136,21 @@ impl Database {
         }
     }
 
-    fn is_initialized(&self) -> bool {
+    #[inline]
+    fn is_ready(&self) -> bool {
         const VALUES_COL_COUNT: &str = "SELECT COUNT(*) FROM pragma_table_info('values');";
         const LINKS_COL_COUNT: &str = "SELECT COUNT(*) FROM pragma_table_info('links');";
+        const SCHEMA_VERSION: &str = "SELECT user_version FROM pragma_user_version();";
 
         let conn = self.conn.lock().unwrap();
+
+        let schema_version: i32 = conn
+            .query_row(SCHEMA_VERSION, [], |r| r.get(0))
+            .unwrap_or_default();
+
+        if schema_version != crate::schema_version!() {
+            return false;
+        }
 
         let values_col_count: u32 = conn
             .query_row(VALUES_COL_COUNT, [], |r| r.get(0))
@@ -165,6 +196,7 @@ impl Data for Database {
         self.query_links(links, &Default::default())
     }
 
+    #[inline]
     fn query_links(&self, links: &mut dyn Links, query: &Query) -> Result<(), LinkError> {
         let context = ("values".into(), "id".into(), "id".into());
         let mut sql = SQLBuilder::new_conjunct(context);

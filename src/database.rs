@@ -159,7 +159,6 @@ impl Database {
         if values_col_count != 13 {
             return false;
         }
-
         let links_col_count: u32 = conn
             .query_row(LINKS_COL_COUNT, [], |r| r.get(0))
             .unwrap_or_default();

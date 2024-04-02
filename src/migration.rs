@@ -10,6 +10,7 @@ pub struct Migrations<'db> {
 
 impl<'db> Migrations<'db> {
     #[inline]
+    #[must_use]
     pub fn new(db: &'db Database) -> Self {
         let version = db.schema_version().unwrap_or(0);
         Self { db, version }
@@ -74,7 +75,7 @@ impl Iterator for Migrations<'_> {
 
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let len = crate::schema_version!() as usize  - self.version as usize;
+        let len = crate::schema_version!() as usize - self.version as usize;
         (len, Some(len))
     }
 }
@@ -82,6 +83,6 @@ impl Iterator for Migrations<'_> {
 impl std::iter::ExactSizeIterator for Migrations<'_> {}
 impl std::iter::FusedIterator for Migrations<'_> {}
 
-pub fn migrate<'db>(db: &'db Database) -> Migrations<'db> {
+pub fn migrate(db: &Database) -> Migrations<'_> {
     Migrations::new(db)
 }

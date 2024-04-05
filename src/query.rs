@@ -288,10 +288,10 @@ impl SqlFragment for DataFilter {
                     key_col.clone(),
                     target_col.clone(),
                 ));
-                inner_sql.select(format!("`{tbl}`.`key_id` as `{key_col}`"));
-                inner_sql.select(format!("`{tbl}`.`target_id` as `{target_col}`"));
+                inner_sql.select(format!("`{tbl}`.`key_uuid` as `{key_col}`"));
+                inner_sql.select(format!("`{tbl}`.`target_uuid` as `{target_col}`"));
                 inner_sql.from(format!("`links` as `{tbl}`"));
-                inner_sql.wher(format!("`{tbl}`.`source_id` == `{}`", sql.context()));
+                inner_sql.wher(format!("`{tbl}`.`source_uuid` == `{}`", sql.context()));
                 s.build_sql(&mut inner_sql)?;
 
                 sql.wher(format!("EXISTS ({inner_sql})"));
@@ -310,7 +310,7 @@ impl SqlFragment for TextFilter {
         let tbl = format!("{}_v", sql.context().replace('.', "_"));
         let mut inner_sql = SQLBuilder::<String>::new_conjunct(sql.context());
         inner_sql.from(format!("`values` as `{tbl}`"));
-        inner_sql.wher(format!("`{tbl}`.`id` == `{}`", sql.context()));
+        inner_sql.wher(format!("`{tbl}`.`uuid` == `{}`", sql.context()));
 
         {
             if let Some(search) = self.exact() {
@@ -373,7 +373,7 @@ mod tests {
         dbg!(&query);
 
         let mut sql =
-            SQLBuilder::new_conjunct(("links".into(), "key_id".into(), "target_id".into()));
+            SQLBuilder::new_conjunct(("links".into(), "key_uuid".into(), "target_uuid".into()));
         query.build_sql(&mut sql).unwrap();
 
         dbg!(&sql);

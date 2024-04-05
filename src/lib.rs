@@ -5,13 +5,14 @@ pub mod migration;
 mod query;
 pub mod storable;
 pub mod storeddata;
+pub mod util;
 
 pub use rusqlite;
 
 #[macro_export]
 macro_rules! schema_version {
     () => {
-        1i32
+        2i32
     };
 }
 

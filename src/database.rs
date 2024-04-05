@@ -11,25 +11,20 @@ use std::{
 };
 
 use crate::{
-    error::{Error, Result},
+    error::Result,
     query::{build_links, SQLBuilder, SqlFragment},
     storeddata::StoredData,
+    util::SqlID,
 };
 
-const INIT_DB: &str = concat!(
-    include_str!("init_db.sql"),
-    "PRAGMA user_version = ",
-    crate::schema_version!(),
-    ";"
-);
-const INSERT_VALUES: &str = "INSERT INTO `values` (id, bool, u8, i8, u16, i16, u32, i32, u64, i64, f32, f64, str)
+const INSERT_VALUES: &str = "INSERT INTO `values` (uuid, bool, u8, i8, u16, i16, u32, i32, u64, i64, f32, f64, str)
 VALUES (?, ? ,? ,? ,? ,? ,? ,? ,? ,? ,? ,? ,?)
-ON CONFLICT(id)
+ON CONFLICT(uuid)
 DO UPDATE
 SET bool=excluded.bool, u8=excluded.u8, i8=excluded.i8, u16=excluded.u16, i16=excluded.i16, u32=excluded.u32, i32=excluded.i32, u64=excluded.u64, i64=excluded.i64, f32=excluded.f32, f64=excluded.f64, str=excluded.str;";
-const INSERT_LINK_KEYED: &str = "INSERT INTO `links` (source_id, target_id, key_id)
+const INSERT_LINK_KEYED: &str = "INSERT INTO `links` (source_uuid, target_uuid, key_uuid)
 VALUES (?, ?, ?);";
-const INSERT_LINK_UNKEYED: &str = "INSERT INTO `links` (source_id, target_id)
+const INSERT_LINK_UNKEYED: &str = "INSERT INTO `links` (source_uuid, target_uuid)
 VALUES (?, ?);";
 
 #[derive(Clone)]
@@ -48,7 +43,20 @@ impl Database {
     #[inline]
     pub fn init(&self) -> Result {
         log::info!("Initializing");
-        self.conn.lock().unwrap().execute_batch(INIT_DB)?;
+        if self.is_ready() {
+            log::info!("Already initialized");
+            return Ok(());
+        }
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+
+        tx.execute_batch(include_str!("migrations/1.sql"))?;
+        tx.execute_batch(include_str!("migrations/2a.sql"))?;
+        tx.execute_batch(include_str!("migrations/2b.sql"))?;
+
+        tx.commit()?;
+        drop(conn);
         debug_assert!(self.is_ready());
         log::debug!("Initialized");
         Ok(())
@@ -99,11 +107,11 @@ impl Database {
     fn store_inner<D: Unique + ?Sized>(tx: &Transaction, data: &D) -> Result<()> {
         let mut stmt = tx.prepare_cached(INSERT_VALUES)?;
 
-        let id = data.id();
+        let id = data.id().into();
         let value = Value::from_data(data);
 
         stmt.execute(params![
-            id.to_string(),
+            id,
             value.as_bool(),
             value.as_u8(),
             value.as_i8(),
@@ -138,36 +146,38 @@ impl Database {
 
     #[inline]
     fn is_ready(&self) -> bool {
-        const VALUES_COL_COUNT: &str = "SELECT COUNT(*) FROM pragma_table_info('values');";
-        const LINKS_COL_COUNT: &str = "SELECT COUNT(*) FROM pragma_table_info('links');";
-        const SCHEMA_VERSION: &str = "SELECT user_version FROM pragma_user_version();";
+        self.schema_version()
+            .is_ok_and(|v| v == crate::schema_version!())
+        // const VALUES_COL_COUNT: &str = "SELECT COUNT(*) FROM pragma_table_info('values');";
+        // const LINKS_COL_COUNT: &str = "SELECT COUNT(*) FROM pragma_table_info('links');";
+        // const SCHEMA_VERSION: &str = "SELECT user_version FROM pragma_user_version();";
 
-        let conn = self.conn.lock().unwrap();
+        // let conn = self.conn.lock().unwrap();
 
-        let schema_version: i32 = conn
-            .query_row(SCHEMA_VERSION, [], |r| r.get(0))
-            .unwrap_or_default();
+        // let schema_version: i32 = conn
+        //     .query_row(SCHEMA_VERSION, [], |r| r.get(0))
+        //     .unwrap_or_default();
 
-        if schema_version != crate::schema_version!() {
-            return false;
-        }
+        // if schema_version != crate::schema_version!() {
+        //     return false;
+        // }
 
-        let values_col_count: u32 = conn
-            .query_row(VALUES_COL_COUNT, [], |r| r.get(0))
-            .unwrap_or_default();
+        // let values_col_count: u32 = conn
+        //     .query_row(VALUES_COL_COUNT, [], |r| r.get(0))
+        //     .unwrap_or_default();
 
-        if values_col_count != 13 {
-            return false;
-        }
-        let links_col_count: u32 = conn
-            .query_row(LINKS_COL_COUNT, [], |r| r.get(0))
-            .unwrap_or_default();
+        // if values_col_count != 13 {
+        //     return false;
+        // }
+        // let links_col_count: u32 = conn
+        //     .query_row(LINKS_COL_COUNT, [], |r| r.get(0))
+        //     .unwrap_or_default();
 
-        if links_col_count != 3 {
-            return false;
-        }
+        // if links_col_count != 3 {
+        //     return false;
+        // }
 
-        true
+        // true
     }
 }
 
@@ -197,19 +207,15 @@ impl Data for Database {
 
     #[inline]
     fn query_links(&self, links: &mut dyn Links, query: &Query) -> Result<(), LinkError> {
-        let context = ("values".into(), "id".into(), "id".into());
+        let context = ("values".into(), "uuid".into(), "uuid".into());
         let mut sql = SQLBuilder::new_conjunct(context);
         // Ensure column #0 is the ID
-        sql.select("`values`.`id`");
+        sql.select("`values`.`uuid`");
         query.build_sql(&mut sql)?;
 
         build_links(self, &sql, links, |r| {
-            let id = r
-                .get_ref(0)?
-                .as_str()?
-                .parse::<ID>()
-                .map_err(|_| Error::InvalidID)?;
-            Ok(self.get(id))
+            let id = r.get::<_, SqlID>(0)?;
+            Ok(self.get(id.into()))
         })?;
 
         Ok(())
@@ -218,7 +224,7 @@ impl Data for Database {
 
 struct Inserter<'tx> {
     tx: &'tx rusqlite::Transaction<'tx>,
-    source_id: ID,
+    source_id: SqlID,
 }
 
 impl Links for Inserter<'_> {
@@ -226,13 +232,12 @@ impl Links for Inserter<'_> {
     fn push_unkeyed(&mut self, target: BoxedData) -> LResult {
         let target = target.into_unique_random();
         Database::store_inner(self.tx, &target)?;
-        let target_id = target.id().to_string();
 
         let mut stmt = self
             .tx
             .prepare_cached(INSERT_LINK_UNKEYED)
             .map_err(LinkError::other)?;
-        stmt.execute([self.source_id.to_string(), target_id])
+        stmt.execute([self.source_id, target.id().into()])
             .map_err(LinkError::other)?;
 
         CONTINUE
@@ -242,17 +247,15 @@ impl Links for Inserter<'_> {
     fn push_keyed(&mut self, target: BoxedData, key: BoxedData) -> LResult {
         let target = target.into_unique_random();
         Database::store_inner(self.tx, &target)?;
-        let target_id = target.id().to_string();
 
         let key = key.into_unique_random();
         Database::store_inner(self.tx, &key)?;
-        let key_id = key.id().to_string();
 
         let mut stmt = self
             .tx
             .prepare_cached(INSERT_LINK_KEYED)
             .map_err(LinkError::other)?;
-        stmt.execute([self.source_id.to_string(), target_id, key_id])
+        stmt.execute([self.source_id, target.id().into(), key.id().into()])
             .map_err(LinkError::other)?;
 
         CONTINUE

@@ -5,7 +5,7 @@ use datalink::{links::prelude::*, prelude::*, query::Query, value::ValueBuiler};
 
 use crate::{
     database::Database,
-    query::{build_links, SQLBuilder, SqlFragment},
+    query::{build_links, QueryContext, SQLBuilder, SqlFragment},
     util::SqlID,
 };
 
@@ -87,7 +87,11 @@ impl Data for StoredData {
         // TODO: when Links provide a way to tell if they need key, target or both
         // we can optimize this query to only select and convert the needed columns to StoredData
 
-        let context = ("links".into(), "key_uuid".into(), "target_uuid".into());
+        let context = QueryContext {
+            table: "links".into(),
+            key_col: "key_uuid".into(),
+            target_col: "target_uuid".into(),
+        };
         let mut sql = SQLBuilder::new_conjunct(context);
         // Ensure column #0 and #1 are the key and target IDs
         sql.select("`links`.`key_uuid`"); // Column #0

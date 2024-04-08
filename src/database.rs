@@ -12,7 +12,7 @@ use std::{
 
 use crate::{
     error::Result,
-    query::{build_links, SQLBuilder, SqlFragment},
+    query::{build_links, QueryContext, SQLBuilder, SqlFragment},
     storeddata::StoredData,
     util::SqlID,
 };
@@ -207,7 +207,11 @@ impl Data for Database {
 
     #[inline]
     fn query_links(&self, links: &mut dyn Links, query: &Query) -> Result<(), LinkError> {
-        let context = ("values".into(), "uuid".into(), "uuid".into());
+        let context = QueryContext {
+            table: "values".into(),
+            key_col: "uuid".into(),
+            target_col: "uuid".into(),
+        };
         let mut sql = SQLBuilder::new_conjunct(context);
         // Ensure column #0 is the ID
         sql.select("`values`.`uuid`");

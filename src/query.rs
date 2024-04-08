@@ -181,26 +181,46 @@ pub trait SqlFragment {
     fn build_sql(&self, sql: &mut SQLBuilder<Self::Context, impl Operator>) -> Result;
 }
 
+#[derive(Debug, Clone)]
+pub struct QueryContext {
+    pub table: String,
+    pub key_col: String,
+    pub target_col: String,
+}
+
 impl SqlFragment for Query {
-    type Context = (String, String, String);
+    type Context = QueryContext;
 
     #[inline]
     fn build_sql(&self, sql: &mut SQLBuilder<Self::Context, impl Operator>) -> Result {
-        let (tab, key_col, target_col) = sql.context().to_owned();
-        let key = format!("{tab}_k");
-        let target = format!("{tab}_t");
-        sql.select(format!("`{tab}`.`{key_col}` as `{key}`"));
-        sql.select(format!("`{tab}`.`{target_col}` as `{target}`"));
-        sql.from(format!("`{tab}`"));
-        let mut selector_sql = SQLBuilder::new_conjunct((key, target));
+        let QueryContext {
+            table,
+            key_col,
+            target_col,
+        } = sql.context().to_owned();
+        let key = format!("{table}_k");
+        let target = format!("{table}_t");
+        sql.select(format!("`{table}`.`{key_col}` as `{key}`"));
+        sql.select(format!("`{table}`.`{target_col}` as `{target}`"));
+        sql.from(format!("`{table}`"));
+        let mut selector_sql = SQLBuilder::new_conjunct(LinkContext {
+            key_col,
+            target_col,
+        });
         self.filter().build_sql(&mut selector_sql)?;
         sql.extend(selector_sql);
         Ok(())
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct LinkContext {
+    pub key_col: String,
+    pub target_col: String,
+}
+
 impl SqlFragment for LinkFilter {
-    type Context = (String, String);
+    type Context = LinkContext;
 
     #[inline]
     fn build_sql(&self, sql: &mut SQLBuilder<Self::Context, impl Operator>) -> Result {
@@ -209,12 +229,16 @@ impl SqlFragment for LinkFilter {
             E::Any => sql.wher("1"),
             E::None => sql.wher("0"),
             E::Key(s) => {
-                let mut inner_sql = SQLBuilder::new_conjunct(sql.context().0.clone());
+                let mut inner_sql = SQLBuilder::new_conjunct(Column {
+                    col: sql.context().key_col.to_owned(),
+                });
                 s.build_sql(&mut inner_sql)?;
                 sql.extend(inner_sql);
             }
             E::Target(s) => {
-                let mut inner_sql = SQLBuilder::new_conjunct(sql.context().1.clone());
+                let mut inner_sql = SQLBuilder::new_conjunct(Column {
+                    col: sql.context().target_col.to_owned(),
+                });
                 s.build_sql(&mut inner_sql)?;
                 sql.extend(inner_sql);
             }
@@ -224,7 +248,7 @@ impl SqlFragment for LinkFilter {
                 }
             }
             E::Or(or) => {
-                let mut inner_sql = SQLBuilder::new_disjunct(sql.context().clone());
+                let mut inner_sql = SQLBuilder::new_disjunct(sql.context().to_owned());
                 for s in or.iter() {
                     s.build_sql(&mut inner_sql)?;
                 }
@@ -236,8 +260,13 @@ impl SqlFragment for LinkFilter {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct Column {
+    pub col: String,
+}
+
 impl SqlFragment for DataFilter {
-    type Context = String;
+    type Context = Column;
     #[inline]
     fn build_sql(&self, sql: &mut SQLBuilder<Self::Context, impl Operator>) -> Result {
         use DataFilter as E;
@@ -245,17 +274,17 @@ impl SqlFragment for DataFilter {
             E::Any => sql.wher("1"),
             E::None => sql.wher("0"),
             E::Id(id) => {
-                sql.wher(format!("`{}` == ?", sql.context()));
+                sql.wher(format!("`{}` == ?", sql.context().col));
                 sql.with(id.to_string());
             }
             // Stored Data is always unique
             E::Unique => sql.wher("1"),
             E::NotId(id) => {
-                sql.wher(format!("`{}` != ?", sql.context()));
+                sql.wher(format!("`{}` != ?", sql.context().col));
                 sql.with(id.to_string());
             }
             E::Not(s) => {
-                let mut inner_sql = SQLBuilder::new_conjunct(sql.context());
+                let mut inner_sql = SQLBuilder::new_conjunct(sql.context().to_owned());
 
                 s.0.build_sql(&mut inner_sql)?;
                 sql.select(&inner_sql.select);
@@ -271,7 +300,7 @@ impl SqlFragment for DataFilter {
                 }
             }
             E::Or(or) => {
-                let mut inner_sql = SQLBuilder::new_disjunct(sql.context());
+                let mut inner_sql = SQLBuilder::new_disjunct(sql.context().to_owned());
                 for s in or.iter() {
                     s.build_sql(&mut inner_sql)?;
                 }
@@ -281,17 +310,17 @@ impl SqlFragment for DataFilter {
                 s.build_sql(sql)?;
             }
             E::Linked(s) => {
-                let tbl = format!("{}_l", sql.context().replace('.', "_"));
+                let tbl = format!("{}_l", sql.context().col.replace('.', "_"));
                 let key_col = format!("{tbl}_k");
                 let target_col = format!("{tbl}_t");
-                let mut inner_sql = SQLBuilder::<(String, String)>::new_conjunct((
-                    key_col.clone(),
-                    target_col.clone(),
-                ));
+                let mut inner_sql = SQLBuilder::<LinkContext>::new_conjunct(LinkContext {
+                    key_col: key_col.to_owned(),
+                    target_col: target_col.to_owned(),
+                });
                 inner_sql.select(format!("`{tbl}`.`key_uuid` as `{key_col}`"));
                 inner_sql.select(format!("`{tbl}`.`target_uuid` as `{target_col}`"));
                 inner_sql.from(format!("`links` as `{tbl}`"));
-                inner_sql.wher(format!("`{tbl}`.`source_uuid` == `{}`", sql.context()));
+                inner_sql.wher(format!("`{tbl}`.`source_uuid` == `{}`", sql.context().col));
                 s.build_sql(&mut inner_sql)?;
 
                 sql.wher(format!("EXISTS ({inner_sql})"));
@@ -304,13 +333,13 @@ impl SqlFragment for DataFilter {
 }
 
 impl SqlFragment for TextFilter {
-    type Context = String;
+    type Context = Column;
     #[inline]
     fn build_sql(&self, sql: &mut SQLBuilder<Self::Context, impl Operator>) -> Result {
-        let tbl = format!("{}_v", sql.context().replace('.', "_"));
-        let mut inner_sql = SQLBuilder::<String>::new_conjunct(sql.context());
+        let tbl = format!("{}_v", sql.context().col.replace('.', "_"));
+        let mut inner_sql = SQLBuilder::<Column>::new_conjunct(sql.context().to_owned());
         inner_sql.from(format!("`values` as `{tbl}`"));
-        inner_sql.wher(format!("`{tbl}`.`uuid` == `{}`", sql.context()));
+        inner_sql.wher(format!("`{tbl}`.`uuid` == `{}`", sql.context().col));
 
         {
             if let Some(search) = self.exact() {
@@ -372,8 +401,11 @@ mod tests {
         );
         dbg!(&query);
 
-        let mut sql =
-            SQLBuilder::new_conjunct(("links".into(), "key_uuid".into(), "target_uuid".into()));
+        let mut sql = SQLBuilder::new_conjunct(QueryContext {
+            table: "links".into(),
+            key_col: "key_uuid".into(),
+            target_col: "target_uuid".into(),
+        });
         query.build_sql(&mut sql).unwrap();
 
         dbg!(&sql);

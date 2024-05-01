@@ -1,7 +1,7 @@
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::cast_sign_loss)]
 
-use datalink::{links::prelude::*, prelude::*, query::Query, value::ValueBuiler};
+use datalink::{links::prelude::*, prelude::*, query::Query, rr::prelude::*};
 
 use crate::{
     database::Database,
@@ -16,10 +16,52 @@ pub struct StoredData {
 
 impl Data for StoredData {
     #[inline]
-    fn provide_value<'d>(&'d self, value: &mut dyn ValueBuiler<'d>) {
+    fn provide_value(&self, mut request: Request) {
+        self.provide_requested(&mut request).debug_assert_provided();
+    }
+
+    #[inline]
+    fn provide_requested<R: Req>(&self, request: &mut Request<R>) -> impl Provided {
         let conn = self.db.conn.lock().unwrap();
         let mut sql = SQLBuilder::<()>::default();
-        sql.select("`values`.`bool`, `values`.`u8`, `values`.`i8`, `values`.`u16`, `values`.`i16`, `values`.`u32`, `values`.`i32`, `values`.`u64`, `values`.`i64`, `values`.`f32`, `values`.`f64`, `values`.`str`");
+
+        if R::requests::<bool>() {
+            sql.select("`values`.`bool` as `bool`");
+        }
+        if R::requests::<u8>() {
+            sql.select("`values`.`u8` as `u8`");
+        }
+        if R::requests::<i8>() {
+            sql.select("`values`.`i8` as `i8`");
+        }
+        if R::requests::<u16>() {
+            sql.select("`values`.`u16` as `u16`");
+        }
+        if R::requests::<i16>() {
+            sql.select("`values`.`i16` as `i16`");
+        }
+        if R::requests::<u32>() {
+            sql.select("`values`.`u32` as `u32`");
+        }
+        if R::requests::<i32>() {
+            sql.select("`values`.`i32` as `i32`");
+        }
+        if R::requests::<u64>() {
+            sql.select("`values`.`u64` as `u64`");
+        }
+        if R::requests::<i64>() {
+            sql.select("`values`.`i64` as `i64`");
+        }
+        if R::requests::<f32>() {
+            sql.select("`values`.`f32` as `f32`");
+        }
+        if R::requests::<f64>() {
+            sql.select("`values`.`f64` as `f64`");
+        }
+        if R::requests::<String>() || R::requests::<&str>() {
+            sql.select("`values`.`str` as `str`");
+        }
+
         sql.from("`values`");
         sql.wher("`uuid` = ?");
         sql.with(SqlID::from(self.id));
@@ -38,42 +80,71 @@ impl Data for StoredData {
             Ok(None) => return,
         };
 
-        if let Ok(v) = row.get(0) {
-            value.bool(v);
+        if R::requests::<bool>() {
+            if let Ok(v) = row.get("bool") {
+                request.provide_bool(v);
+            }
         }
-        if let Ok(v) = row.get(1) {
-            value.u8(v);
+        if R::requests::<u8>() {
+            if let Ok(v) = row.get("u8") {
+                request.provide_u8(v);
+            }
         }
-        if let Ok(v) = row.get(2) {
-            value.i8(v);
+        if R::requests::<i8>() {
+            if let Ok(v) = row.get("i8") {
+                request.provide_i8(v);
+            }
         }
-        if let Ok(v) = row.get(3) {
-            value.u16(v);
+        if R::requests::<u16>() {
+            if let Ok(v) = row.get("u16") {
+                request.provide_u16(v);
+            }
         }
-        if let Ok(v) = row.get(4) {
-            value.i16(v);
+        if R::requests::<i16>() {
+            if let Ok(v) = row.get("i16") {
+                request.provide_i16(v);
+            }
         }
-        if let Ok(v) = row.get(5) {
-            value.u32(v);
+        if R::requests::<u32>() {
+            if let Ok(v) = row.get("u32") {
+                request.provide_u32(v);
+            }
         }
-        if let Ok(v) = row.get(6) {
-            value.i32(v);
+        if R::requests::<i32>() {
+            if let Ok(v) = row.get("i32") {
+                request.provide_i32(v);
+            }
         }
-        if let Ok(v) = row.get(7) {
-            value.u64(v);
+        if R::requests::<u64>() {
+            if let Ok(v) = row.get("u64") {
+                request.provide_u64(v);
+            }
         }
-        if let Ok(v) = row.get(8) {
-            value.i64(v);
+        if R::requests::<i64>() {
+            if let Ok(v) = row.get("i64") {
+                request.provide_i64(v);
+            }
         }
-        if let Ok(v) = row.get(9) {
-            value.f32(v);
+        if R::requests::<f32>() {
+            if let Ok(v) = row.get("f32") {
+                request.provide_f32(v);
+            }
         }
-        if let Ok(v) = row.get(10) {
-            value.f64(v);
+        if R::requests::<f64>() {
+            if let Ok(v) = row.get("f64") {
+                request.provide_f64(v);
+            }
         }
-        if let Ok(v) = row.get::<_, String>(11) {
-            value.str(v.into());
+        if R::requests::<String>() {
+            if let Ok(v) = row.get("str") {
+                request.provide_str_owned(v);
+            }
+        } else if R::requests::<&str>() {
+            if let Ok(v) = row.get::<_, String>("str") {
+                request.provide_str(v.as_str());
+            }
         }
+
         // todo: blob/bytes and u128, i128
     }
 

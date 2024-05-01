@@ -14,7 +14,7 @@ pub trait Storable {
     }
 }
 
-impl<D: Unique + ?Sized> Storable for D {
+impl<D: Data + Unique> Storable for D {
     #[inline]
     fn store(&self, db: &Database) -> Result<StoredData> {
         db.store(self)

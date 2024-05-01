@@ -2,7 +2,6 @@ use datalink::{
     links::prelude::{Result as LResult, *},
     prelude::*,
     query::Query,
-    value::Value,
 };
 use rusqlite::{params, Connection, Transaction};
 use std::{
@@ -91,7 +90,7 @@ impl Database {
     }
 
     #[inline]
-    pub fn store<D: Unique + ?Sized>(&self, data: &D) -> Result<StoredData> {
+    pub fn store<D: Data + Unique>(&self, data: &D) -> Result<StoredData> {
         debug_assert!(self.is_ready());
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
@@ -104,26 +103,27 @@ impl Database {
     }
 
     #[inline]
-    fn store_inner<D: Unique + ?Sized>(tx: &Transaction, data: &D) -> Result<()> {
+    fn store_inner<D: Data + Unique>(tx: &Transaction, data: &D) -> Result<()> {
+        use datalink::data::DataExt;
         let mut stmt = tx.prepare_cached(INSERT_VALUES)?;
 
         let id = data.id().into();
-        let value = Value::from_data(data);
+        let values = data.all_values();
 
         stmt.execute(params![
             id,
-            value.as_bool(),
-            value.as_u8(),
-            value.as_i8(),
-            value.as_u16(),
-            value.as_i16(),
-            value.as_u32(),
-            value.as_i32(),
-            value.as_u64(),
-            value.as_i64(),
-            value.as_f32(),
-            value.as_f64(),
-            value.as_str()
+            values.as_bool(),
+            values.as_u8(),
+            values.as_i8(),
+            values.as_u16(),
+            values.as_i16(),
+            values.as_u32(),
+            values.as_i32(),
+            values.as_u64(),
+            values.as_i64(),
+            values.as_f32(),
+            values.as_f64(),
+            values.as_str()
         ])?;
 
         drop(stmt);

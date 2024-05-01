@@ -11,7 +11,7 @@ migrations = []
 
 
 [dependencies]
-datalink = { git = "https://github.com/SebastianSpeitel/datalink.git", version = "0.2", features = [
+datalink = { git = "https://github.com/SebastianSpeitel/datalink.git", version = "0.2", rev = "b967cec", features = [
     "random",
     "unique",
 ] }

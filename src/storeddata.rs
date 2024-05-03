@@ -9,6 +9,7 @@ use crate::{
     util::SqlID,
 };
 
+#[derive(Debug, Clone)]
 pub struct StoredData {
     pub(crate) db: Database,
     pub(crate) id: ID,

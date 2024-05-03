@@ -26,7 +26,7 @@ VALUES (?, ?, ?);";
 const INSERT_LINK_UNKEYED: &str = "INSERT INTO `links` (source_uuid, target_uuid)
 VALUES (?, ?);";
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Database {
     pub(crate) conn: Arc<Mutex<Connection>>,
 }

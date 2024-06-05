@@ -1,7 +1,10 @@
-#![allow(clippy::cast_possible_truncation)]
-#![allow(clippy::cast_sign_loss)]
-
-use datalink::{links::prelude::*, prelude::*, query::Query, rr::prelude::*};
+use datalink::{
+    links::prelude::*,
+    prelude::*,
+    query::Query,
+    rr::TypeSet,
+    value::{Provided, ValueQuery, ValueRequest},
+};
 
 use crate::{
     database::Database,
@@ -17,136 +20,41 @@ pub struct StoredData {
 
 impl Data for StoredData {
     #[inline]
-    fn provide_value(&self, mut request: Request) {
-        self.provide_requested(&mut request).debug_assert_provided();
+    fn provide_value(&self, request: &mut ValueRequest) {
+        self.provide_requested(request).debug_assert_provided();
     }
 
     #[inline]
-    fn provide_requested<R: Req>(&self, request: &mut Request<R>) -> impl Provided {
-        let conn = self.db.conn.lock().unwrap();
-        let mut sql = SQLBuilder::<()>::default();
-
-        if R::requests::<bool>() {
-            sql.select("`values`.`bool` as `bool`");
-        }
-        if R::requests::<u8>() {
-            sql.select("`values`.`u8` as `u8`");
-        }
-        if R::requests::<i8>() {
-            sql.select("`values`.`i8` as `i8`");
-        }
-        if R::requests::<u16>() {
-            sql.select("`values`.`u16` as `u16`");
-        }
-        if R::requests::<i16>() {
-            sql.select("`values`.`i16` as `i16`");
-        }
-        if R::requests::<u32>() {
-            sql.select("`values`.`u32` as `u32`");
-        }
-        if R::requests::<i32>() {
-            sql.select("`values`.`i32` as `i32`");
-        }
-        if R::requests::<u64>() {
-            sql.select("`values`.`u64` as `u64`");
-        }
-        if R::requests::<i64>() {
-            sql.select("`values`.`i64` as `i64`");
-        }
-        if R::requests::<f32>() {
-            sql.select("`values`.`f32` as `f32`");
-        }
-        if R::requests::<f64>() {
-            sql.select("`values`.`f64` as `f64`");
-        }
-        if R::requests::<String>() || R::requests::<&str>() {
-            sql.select("`values`.`str` as `str`");
-        }
+    fn provide_requested<Q: ValueQuery>(&self, request: &mut ValueRequest<Q>) -> impl Provided {
+        let mut sql = SQLBuilder::default();
+        let selected = select_requested(&mut sql, &request.requesting());
 
         sql.from("`values`");
         sql.wher("`uuid` = ?");
         sql.with(SqlID::from(self.id));
 
+        let conn = self.db.conn.lock().unwrap();
         log::trace!("Running query: {:?}", &sql);
 
         let mut stmt = sql.prepare_cached(&conn).unwrap();
-        let mut rows = stmt.query(sql.params()).unwrap();
+        let Ok(mut rows) = stmt.query(sql.params()) else {
+            log::error!("Failed to run query: {sql:?}");
+            return;
+        };
 
         let row = match rows.next() {
             Ok(Some(r)) => r,
             Err(e) => {
-                log::trace!("Failed to get values: {e}");
+                log::warn!("Failed to get values: {e}");
                 return;
             }
-            Ok(None) => return,
+            Ok(None) => {
+                log::warn!("Data without value row: {}", self.id);
+                return;
+            }
         };
 
-        if R::requests::<bool>() {
-            if let Ok(v) = row.get("bool") {
-                request.provide_bool(v);
-            }
-        }
-        if R::requests::<u8>() {
-            if let Ok(v) = row.get("u8") {
-                request.provide_u8(v);
-            }
-        }
-        if R::requests::<i8>() {
-            if let Ok(v) = row.get("i8") {
-                request.provide_i8(v);
-            }
-        }
-        if R::requests::<u16>() {
-            if let Ok(v) = row.get("u16") {
-                request.provide_u16(v);
-            }
-        }
-        if R::requests::<i16>() {
-            if let Ok(v) = row.get("i16") {
-                request.provide_i16(v);
-            }
-        }
-        if R::requests::<u32>() {
-            if let Ok(v) = row.get("u32") {
-                request.provide_u32(v);
-            }
-        }
-        if R::requests::<i32>() {
-            if let Ok(v) = row.get("i32") {
-                request.provide_i32(v);
-            }
-        }
-        if R::requests::<u64>() {
-            if let Ok(v) = row.get("u64") {
-                request.provide_u64(v);
-            }
-        }
-        if R::requests::<i64>() {
-            if let Ok(v) = row.get("i64") {
-                request.provide_i64(v);
-            }
-        }
-        if R::requests::<f32>() {
-            if let Ok(v) = row.get("f32") {
-                request.provide_f32(v);
-            }
-        }
-        if R::requests::<f64>() {
-            if let Ok(v) = row.get("f64") {
-                request.provide_f64(v);
-            }
-        }
-        if R::requests::<String>() {
-            if let Ok(v) = row.get("str") {
-                request.provide_str_owned(v);
-            }
-        } else if R::requests::<&str>() {
-            if let Ok(v) = row.get::<_, String>("str") {
-                request.provide_str(v.as_str());
-            }
-        }
-
-        // todo: blob/bytes and u128, i128
+        provide_selected(row, request, selected);
     }
 
     #[inline]
@@ -197,6 +105,121 @@ impl Unique for StoredData {
     #[inline]
     fn id(&self) -> ID {
         self.id
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Column {
+    Unused,
+    Bool,
+    U8,
+    I8,
+    U16,
+    I16,
+    U32,
+    I32,
+    U64,
+    I64,
+    F32,
+    F64,
+    Str,
+}
+
+#[allow(unused_assignments)] // last idx increment
+fn select_requested(sql: &mut SQLBuilder, requested: &impl TypeSet) -> [Column; 12] {
+    let mut selected: [Column; 12] = [Column::Unused; 12];
+    let mut idx = 0;
+
+    macro_rules! select {
+        ($sql:literal, $col:ident) => {
+            sql.select($sql);
+            selected[idx] = Column::$col;
+            idx += 1;
+        };
+    }
+
+    if requested.contains_type::<bool>() {
+        select!("`values`.`bool` as `bool`", Bool);
+    }
+    if requested.contains_type::<u8>() {
+        select!("`values`.`u8` as `u8`", U8);
+    }
+    if requested.contains_type::<i8>() {
+        select!("`values`.`i8` as `i8`", I8);
+    }
+    if requested.contains_type::<u16>() {
+        select!("`values`.`u16` as `u16`", U16);
+    }
+    if requested.contains_type::<i16>() {
+        select!("`values`.`i16` as `i16`", I16);
+    }
+    if requested.contains_type::<u32>() {
+        select!("`values`.`u32` as `u32`", U32);
+    }
+    if requested.contains_type::<i32>() {
+        select!("`values`.`i32` as `i32`", I32);
+    }
+    if requested.contains_type::<u64>() {
+        select!("`values`.`u64` as `u64`", U64);
+    }
+    if requested.contains_type::<i64>() {
+        select!("`values`.`i64` as `i64`", I64);
+    }
+    if requested.contains_type::<f32>() {
+        select!("`values`.`f32` as `f32`", F32);
+    }
+    if requested.contains_type::<f64>() {
+        select!("`values`.`f64` as `f64`", F64);
+    }
+    if requested.contains_type::<&str>() {
+        select!("`values`.`str` as `str`", Str);
+    }
+
+    selected
+}
+
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+fn provide_selected<Q: ValueQuery, const C: usize>(
+    row: &rusqlite::Row,
+    request: &mut ValueRequest<Q>,
+    selected: [Column; C],
+) {
+    use rusqlite::types::ValueRef as V;
+    use Column as C;
+
+    for cell in selected
+        .into_iter()
+        .take_while(|c| *c != Column::Unused)
+        .enumerate()
+        .map(|(idx, col)| (col, row.get_ref(idx).unwrap()))
+    {
+        match cell {
+            (C::Bool, V::Integer(0)) => request.provide_bool(false),
+            (C::Bool, V::Integer(1)) => request.provide_bool(true),
+            (C::U8, V::Integer(i)) => request.provide_u8(i as u8),
+            (C::I8, V::Integer(i)) => request.provide_i8(i as i8),
+            (C::U16, V::Integer(i)) => request.provide_u16(i as u16),
+            (C::I16, V::Integer(i)) => request.provide_i16(i as i16),
+            (C::U32, V::Integer(i)) => request.provide_u32(i as u32),
+            (C::I32, V::Integer(i)) => request.provide_i32(i as i32),
+            (C::U64, V::Integer(i)) => request.provide_u64(i as u64),
+            (C::I64, V::Integer(i)) => request.provide_i64(i),
+            (C::F32, V::Real(f)) => request.provide_f32(f as f32),
+            (C::F32, V::Integer(i)) => request.provide_f32(i as f32),
+            (C::F64, V::Real(f)) => request.provide_f64(f),
+            (C::F64, V::Integer(i)) => request.provide_f64(i as f64),
+            (C::Str, V::Text(s)) => {
+                debug_assert!(std::str::from_utf8(s).is_ok());
+                request.provide_str(unsafe { std::str::from_utf8_unchecked(s) });
+            }
+            (c, v) => {
+                log::warn!("Unexpected value {v:?} for column {c:?}");
+            }
+        }
     }
 }
 

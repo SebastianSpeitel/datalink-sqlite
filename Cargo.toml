@@ -1,6 +1,6 @@
 [package]
 name = "datalink_sqlite"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -11,10 +11,10 @@ migrations = []
 
 
 [dependencies]
-datalink = { git = "https://github.com/SebastianSpeitel/datalink", version = "0.3", features = [
+datalink = { git = "https://github.com/SebastianSpeitel/datalink", version = "0.4", features = [
     "random",
     "unique",
-], tag = "v0.3.2" }
+], tag = "v0.4.1" }
 log = "*"
 rusqlite = { version = "0.31", features = [] }
 thiserror = "1.0"

@@ -198,6 +198,7 @@ fn provide_selected<Q: ValueQuery, const C: usize>(
         .map(|(idx, col)| (col, row.get_ref(idx).unwrap()))
     {
         match cell {
+            (_, V::Null) => {}
             (C::Bool, V::Integer(0)) => request.provide_bool(false),
             (C::Bool, V::Integer(1)) => request.provide_bool(true),
             (C::U8, V::Integer(i)) => request.provide_u8(i as u8),

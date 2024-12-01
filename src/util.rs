@@ -8,6 +8,22 @@ use rusqlite::{
 #[repr(transparent)]
 pub struct SqlID(ID);
 
+
+impl SqlID {
+    #[inline]
+    pub fn new_random() -> Self {
+        use rand::Rng;
+        rand::thread_rng().gen()
+    }
+}
+
+impl rand::distributions::Distribution<SqlID> for rand::distributions::Standard {
+    #[inline]
+    fn sample<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> SqlID {
+        SqlID(self.sample(rng))
+    }
+}
+
 impl ToSql for SqlID {
     #[inline]
     fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {

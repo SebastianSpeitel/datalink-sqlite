@@ -1,26 +1,13 @@
-use datalink::{
-    links::prelude::{Result as LResult, *},
-    prelude::*,
-    query::Query,
-};
+use datalink::{prelude::*, Query, Receiver};
 use rusqlite::{params, Connection, Transaction};
 use std::{
+    cell::OnceCell,
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{Arc, RwLock},
 };
 
-use crate::{
-    error::Result,
-    query::{build_links, QueryContext, SQLBuilder, SqlFragment},
-    storeddata::StoredData,
-    util::SqlID,
-};
+use crate::{error::Result, storeddata::StoredData, util::SqlID};
 
-const INSERT_VALUES: &str = "INSERT INTO `values` (uuid, bool, u8, i8, u16, i16, u32, i32, u64, i64, f32, f64, str)
-VALUES (?, ? ,? ,? ,? ,? ,? ,? ,? ,? ,? ,? ,?)
-ON CONFLICT(uuid)
-DO UPDATE
-SET bool=excluded.bool, u8=excluded.u8, i8=excluded.i8, u16=excluded.u16, i16=excluded.i16, u32=excluded.u32, i32=excluded.i32, u64=excluded.u64, i64=excluded.i64, f32=excluded.f32, f64=excluded.f64, str=excluded.str;";
 const INSERT_LINK_KEYED: &str = "INSERT INTO `links` (source_uuid, target_uuid, key_uuid)
 VALUES (?, ?, ?);";
 const INSERT_LINK_UNKEYED: &str = "INSERT INTO `links` (source_uuid, target_uuid)
@@ -28,14 +15,14 @@ VALUES (?, ?);";
 
 #[derive(Debug, Clone)]
 pub struct Database {
-    pub(crate) conn: Arc<Mutex<Connection>>,
+    pub(crate) conn: Arc<RwLock<Connection>>,
 }
 
 impl Database {
     #[inline]
     pub fn new(conn: Connection) -> Self {
         Self {
-            conn: Arc::new(Mutex::new(conn)),
+            conn: Arc::new(RwLock::new(conn)),
         }
     }
 
@@ -47,7 +34,7 @@ impl Database {
             return Ok(());
         }
 
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.write().unwrap();
         let tx = conn.transaction()?;
 
         tx.execute_batch(include_str!("migrations/1.sql"))?;
@@ -72,7 +59,7 @@ impl Database {
     pub fn schema_version(&self) -> Result<i32> {
         const SQL: &str = "SELECT user_version FROM pragma_user_version();";
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.read().unwrap();
         let version = conn.query_row(SQL, [], |r| r.get(0))?;
         Ok(version)
     }
@@ -92,47 +79,19 @@ impl Database {
     #[inline]
     pub fn store<D: Data + Unique>(&self, data: &D) -> Result<StoredData> {
         debug_assert!(self.is_ready());
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.write().unwrap();
         let tx = conn.transaction()?;
-        Self::store_inner(&tx, data)?;
+
+        let mut upserter = Upserter::new(&tx);
+        upserter.id.set(data.id().into()).unwrap();
+        data.query(&mut upserter);
+        drop(upserter);
+
         tx.commit()?;
         Ok(StoredData {
             db: self.clone(),
             id: data.id(),
         })
-    }
-
-    #[inline]
-    fn store_inner<D: Data + Unique>(tx: &Transaction, data: &D) -> Result<()> {
-        use datalink::data::DataExt;
-        let mut stmt = tx.prepare_cached(INSERT_VALUES)?;
-
-        let id = data.id().into();
-        let values = data.all_values();
-
-        stmt.execute(params![
-            id,
-            values.as_bool(),
-            values.as_u8(),
-            values.as_i8(),
-            values.as_u16(),
-            values.as_i16(),
-            values.as_u32(),
-            values.as_i32(),
-            values.as_u64(),
-            values.as_i64(),
-            values.as_f32(),
-            values.as_f64(),
-            values.as_str()
-        ])?;
-
-        drop(stmt);
-
-        let mut inserter = Inserter { tx, source_id: id };
-
-        data.provide_links(&mut inserter)?;
-
-        Ok(())
     }
 
     #[inline]
@@ -190,87 +149,202 @@ impl From<Connection> for Database {
 
 impl Data for Database {
     #[inline]
-    fn provide_links(&self, links: &mut dyn Links) -> Result<(), LinkError> {
-        let conn = self.conn.lock().unwrap();
-        if let Some(path) = conn.path() {
-            links.push_link(("path", path.to_owned()))?;
+    fn query(&self, request: &mut impl datalink::Request) {
+        let conn = self.conn.read().unwrap();
+        if let Some(p) = conn.path() {
+            request.provide(("path", p.to_owned()));
         }
 
-        links.push_link(("last_insert_rowid", conn.last_insert_rowid()))?;
-        links.push_link(("last_changes", conn.changes()))?;
-        links.push_link(("autocommit", conn.is_autocommit()))?;
-        links.push_link(("busy", conn.is_busy()))?;
-        drop(conn);
+        request.provide(("last_insert_rowid", conn.last_insert_rowid()));
+        request.provide(("last_changes", conn.changes()));
+        request.provide(("autocommit", conn.is_autocommit()));
+        request.provide(("busy", conn.is_busy()));
 
-        self.query_links(links, &Default::default())
+        const SQL: &str = "SELECT `values`.`uuid` AS `uuid` FROM `values`
+        UNION
+        SELECT `links`.`source_uuid` AS `uuid` FROM `links`; ";
+        let mut stmt = conn.prepare_cached(SQL).unwrap();
+
+        let mut rows = stmt.query([]).unwrap();
+
+        while let Ok(Some(row)) = rows.next() {
+            let id: SqlID = row.get(0).unwrap();
+            let data = self.get(id.into());
+            request.provide((data,));
+        }
+    }
+}
+
+trait AsID: core::fmt::Debug {
+    fn as_id(&self) -> SqlID;
+}
+
+impl AsID for ID {
+    #[inline]
+    fn as_id(&self) -> SqlID {
+        SqlID::from(*self)
+    }
+}
+
+impl AsID for SqlID {
+    #[inline]
+    fn as_id(&self) -> SqlID {
+        *self
+    }
+}
+
+impl AsID for OnceCell<SqlID> {
+    #[inline]
+    fn as_id(&self) -> SqlID {
+        *self.get_or_init(SqlID::new_random)
+    }
+}
+
+impl AsID for &OnceCell<SqlID> {
+    #[inline]
+    fn as_id(&self) -> SqlID {
+        *self.get_or_init(SqlID::new_random)
+    }
+}
+
+#[derive(Debug)]
+struct Upserter<'tx, ID: AsID> {
+    tx: &'tx Transaction<'tx>,
+    id: ID,
+    next_key_id: OnceCell<SqlID>,
+    next_target_id: OnceCell<SqlID>,
+}
+
+impl<'tx> Upserter<'tx, OnceCell<SqlID>> {
+    fn new(tx: &'tx Transaction) -> Self {
+        Self {
+            tx,
+            id: OnceCell::new(),
+            next_key_id: OnceCell::new(),
+            next_target_id: OnceCell::new(),
+        }
+    }
+}
+
+impl<'tx, ID: AsID> Upserter<'tx, ID> {
+    fn new_key(&self) -> Upserter<'tx, &'_ OnceCell<SqlID>> {
+        Upserter {
+            tx: self.tx,
+            id: &self.next_key_id,
+            next_key_id: OnceCell::new(),
+            next_target_id: OnceCell::new(),
+        }
     }
 
-    #[inline]
-    fn query_links(&self, links: &mut dyn Links, query: &Query) -> Result<(), LinkError> {
-        let context = QueryContext {
-            table: "values".into(),
-            key_col: "uuid".into(),
-            target_col: "uuid".into(),
-        };
-        let mut sql = SQLBuilder::new_conjunct(context);
-        // Ensure column #0 is the ID
-        sql.select("`values`.`uuid`");
-        query.build_sql(&mut sql)?;
+    fn new_target(&self) -> Upserter<'tx, &'_ OnceCell<SqlID>> {
+        Upserter {
+            tx: self.tx,
+            id: &self.next_target_id,
+            next_key_id: OnceCell::new(),
+            next_target_id: OnceCell::new(),
+        }
+    }
 
-        build_links(self, &sql, links, |r| {
-            let id = r.get::<_, SqlID>(0)?;
-            Ok(self.get(id.into()))
-        })?;
+    fn finish_link(&mut self) -> Result<(), rusqlite::Error> {
+        dbg!(&self);
+
+        let key_id = self.next_key_id.take();
+        let Some(target_id) = self.next_target_id.take() else {
+            return Ok(());
+        };
+
+        if let Some(key_id) = key_id {
+            let mut stmt = self.tx.prepare_cached(INSERT_LINK_KEYED)?;
+            stmt.execute([self.id.as_id(), target_id, key_id])?;
+        } else {
+            let mut stmt = self.tx.prepare_cached(INSERT_LINK_UNKEYED)?;
+            stmt.execute([self.id.as_id(), target_id])?;
+        }
 
         Ok(())
     }
 }
 
-struct Inserter<'tx> {
-    tx: &'tx rusqlite::Transaction<'tx>,
-    source_id: SqlID,
+impl<'tx, ID: AsID> Drop for Upserter<'tx, ID> {
+    fn drop(&mut self) {
+        let _ = self.finish_link();
+    }
 }
 
-impl Links for Inserter<'_> {
-    #[inline]
-    fn push_unkeyed(&mut self, target: BoxedData) -> LResult {
-        let target = target.into_unique_random();
-        Database::store_inner(self.tx, &target)?;
+impl<'tx, ID: AsID> Query for Upserter<'tx, ID> {
+    type Filter<'q> = datalink::types::Any where Self: 'q;
+    type KeyQuery<'q> = Upserter<'tx, &'q OnceCell<SqlID>> where Self: 'q;
+    type TargetQuery<'q> = Upserter<'tx, &'q OnceCell<SqlID>> where Self: 'q;
+    type Receiver<'q> = &'q mut Self where Self: 'q;
 
-        let mut stmt = self
-            .tx
-            .prepare_cached(INSERT_LINK_UNKEYED)
-            .map_err(LinkError::other)?;
-        stmt.execute([self.source_id, target.id().into()])
-            .map_err(LinkError::other)?;
-
-        CONTINUE
+    fn filter(&self) -> Self::Filter<'_> {
+        Default::default()
     }
 
-    #[inline]
-    fn push_keyed(&mut self, target: BoxedData, key: BoxedData) -> LResult {
-        let target = target.into_unique_random();
-        Database::store_inner(self.tx, &target)?;
+    fn link_query(&mut self) -> (Self::TargetQuery<'_>, Self::KeyQuery<'_>) {
+        self.finish_link().unwrap();
 
-        let key = key.into_unique_random();
-        Database::store_inner(self.tx, &key)?;
-
-        let mut stmt = self
-            .tx
-            .prepare_cached(INSERT_LINK_KEYED)
-            .map_err(LinkError::other)?;
-        stmt.execute([self.source_id, target.id().into(), key.id().into()])
-            .map_err(LinkError::other)?;
-
-        CONTINUE
+        (self.new_target(), self.new_key())
     }
 
+    fn key_query(&mut self) -> Self::KeyQuery<'_> {
+        self.new_key()
+    }
+
+    fn target_query(&mut self) -> Self::TargetQuery<'_> {
+        self.new_target()
+    }
+
+    fn receiver(&mut self) -> Self::Receiver<'_> {
+        self
+    }
+}
+
+macro_rules! insert_impl {
+    ($f:ident($ty:ty) => $col:literal) => {
+        fn $f(&mut self, value: $ty) {
+            const SQL: &str = concat!(
+                "INSERT INTO `values` (uuid, ",
+                $col,
+                ") VALUES (?, ?) ON CONFLICT(uuid) DO UPDATE SET ",
+                $col,
+                "=excluded.",
+                $col,
+                ";"
+            );
+            let mut stmt = self.tx.prepare_cached(SQL).unwrap();
+            stmt.execute(params![self.id.as_id(), value]).unwrap();
+        }
+    };
+}
+
+#[warn(clippy::missing_trait_methods)]
+impl<ID: AsID> Receiver for Upserter<'_, ID> {
+    insert_impl!(bool(bool) => "bool");
+    insert_impl!(u8(u8) => "u8");
+    insert_impl!(i8(i8) => "i8");
+    insert_impl!(u16(u16) => "u16");
+    insert_impl!(i16(i16) => "i16");
+    insert_impl!(u32(u32) => "u32");
+    insert_impl!(i32(i32) => "i32");
+    insert_impl!(u64(u64) => "u64");
+    insert_impl!(i64(i64) => "i64");
+    // insert_impl!(u128(u128) => "u128");
+    // insert_impl!(i128(i128) => "i128");
+    insert_impl!(f32(f32) => "f32");
+    insert_impl!(f64(f64) => "f64");
+    insert_impl!(str(&str) => "str");
+
     #[inline]
-    fn push(&mut self, target: BoxedData, key: Option<BoxedData>) -> LResult {
-        if let Some(key) = key {
-            self.push_keyed(target, key)
-        } else {
-            self.push_unkeyed(target)
+    fn other_ref(&mut self, value: &dyn std::any::Any) {
+        if let Some(id) = value.downcast_ref::<datalink::id::ID>() {
+            assert_eq!(self.id.as_id(), id.as_id());
+            return;
+        }
+
+        if let Some(id) = value.downcast_ref::<SqlID>() {
+            assert_eq!(self.id.as_id(), *id);
+            return;
         }
     }
 }
@@ -291,19 +365,21 @@ mod tests {
         let db = test_db();
 
         // No data without a key
-        let list = db.as_list().unwrap();
-        assert_eq!(list.len(), 0);
+        let list = db.as_list();
+        assert!(list.len() > 0);
 
-        let items = db.as_items().unwrap();
+        let items = db.as_items();
         dbg!(items);
     }
 
     #[test]
-    fn in_out() {
+    fn in_out_bool() {
         let db = test_db();
 
         let data = true.into_unique_random();
         let stored = db.store(&data).unwrap();
+
+        dbg!(&db as &ErasedData);
 
         assert_eq!(true, stored.as_bool().unwrap());
     }
@@ -316,7 +392,11 @@ mod tests {
         let data = data.into_unique_random();
         let stored = db.store(&data).unwrap();
 
-        let list = stored.as_list().unwrap();
+        let list = stored.as_list();
+
+        dbg!(&db as &ErasedData);
+        dbg!(&list);
+
         assert_eq!(list.len(), 3);
     }
 
@@ -336,6 +416,6 @@ mod tests {
     #[should_panic]
     fn uninitialized() {
         let db = Database::open_in_memory().unwrap();
-        let _ = db.store(&true.into_unique_random()).unwrap();
+        db.store(&true.into_unique_random()).unwrap();
     }
 }

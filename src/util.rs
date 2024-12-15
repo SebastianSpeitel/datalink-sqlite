@@ -8,7 +8,6 @@ use rusqlite::{
 #[repr(transparent)]
 pub struct SqlID(ID);
 
-
 impl SqlID {
     #[inline]
     pub fn new_random() -> Self {

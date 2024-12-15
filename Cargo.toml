@@ -14,7 +14,7 @@ migrations = []
 datalink = { git = "https://github.com/SebastianSpeitel/datalink", version = "0.4", features = [
     "random",
     "unique",
-], rev = "93978a22925df1c3e2e6309382238ec25d4e81d2" }
+], branch = "new-request" }
 log = "*"
 rand = "0.8"
 rusqlite = { version = "0.32", features = [] }

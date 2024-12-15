@@ -272,10 +272,22 @@ impl<'tx, ID: AsID> Drop for Upserter<'tx, ID> {
 }
 
 impl<'tx, ID: AsID> Query for Upserter<'tx, ID> {
-    type Filter<'q> = datalink::types::Any where Self: 'q;
-    type KeyQuery<'q> = Upserter<'tx, &'q OnceCell<SqlID>> where Self: 'q;
-    type TargetQuery<'q> = Upserter<'tx, &'q OnceCell<SqlID>> where Self: 'q;
-    type Receiver<'q> = &'q mut Self where Self: 'q;
+    type Filter<'q>
+        = datalink::query::AcceptAny
+    where
+        Self: 'q;
+    type KeyQuery<'q>
+        = Upserter<'tx, &'q OnceCell<SqlID>>
+    where
+        Self: 'q;
+    type TargetQuery<'q>
+        = Upserter<'tx, &'q OnceCell<SqlID>>
+    where
+        Self: 'q;
+    type Receiver<'q>
+        = &'q mut Self
+    where
+        Self: 'q;
 
     fn filter(&self) -> Self::Filter<'_> {
         Default::default()

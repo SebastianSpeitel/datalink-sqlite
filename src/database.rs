@@ -18,6 +18,10 @@ pub struct Database {
     pub(crate) conn: Arc<RwLock<Connection>>,
 }
 
+// Not sure if this is actually safe (probably not)
+unsafe impl Send for Database {}
+unsafe impl Sync for Database {}
+
 impl Database {
     #[inline]
     pub fn new(conn: Connection) -> Self {

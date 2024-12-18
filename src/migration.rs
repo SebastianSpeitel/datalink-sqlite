@@ -156,6 +156,8 @@ impl Migration<2> {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use datalink::{data::DataExt, Data};
 
     use super::*;
@@ -212,7 +214,7 @@ mod tests {
         // Migrate to current version
         migrations.run_all().unwrap();
 
-        let data = db.get("1".parse().unwrap());
+        let data = db.get(ID::from_str("1").unwrap());
         let items = data.as_items();
         let list = data.as_list();
 

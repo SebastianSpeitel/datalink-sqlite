@@ -96,10 +96,10 @@ impl Database {
 
     #[inline]
     #[must_use]
-    pub fn get(&self, id: ID) -> StoredData {
+    pub fn get(&self, id: impl Into<ID>) -> StoredData {
         StoredData {
             db: self.clone(),
-            id,
+            id: id.into(),
         }
     }
 
@@ -169,7 +169,7 @@ impl Data for Database {
 
         while let Ok(Some(row)) = rows.next() {
             let id: SqlID = row.get(0).unwrap();
-            let data = self.get(id.into());
+            let data = self.get(id);
             request.provide((data,));
         }
     }
@@ -246,8 +246,6 @@ impl<'tx, ID: AsID> Upserter<'tx, ID> {
     }
 
     fn finish_link(&mut self) -> Result<(), rusqlite::Error> {
-        dbg!(&self);
-
         let key_id = self.next_key_id.take();
         let Some(target_id) = self.next_target_id.take() else {
             return Ok(());

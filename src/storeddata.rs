@@ -21,55 +21,54 @@ impl StoredData {
         use datalink::link::IsPrimitive;
         const FALLBACK_SQL: &str = "SELECT * FROM `values` WHERE `uuid` = ?";
 
-        debug_assert!(request
-            .query_ref()
-            .filter()
-            .accepted_key_types()
-            .contains::<IsPrimitive>());
+        let filter = request.query_ref().filter();
+
+        debug_assert!(filter.accepted_key_types().contains::<IsPrimitive>());
 
         let mut cols = [Option::<&'static str>::None; 12];
         let mut col_iter = cols.iter_mut();
 
-        let filter = request.query_ref().filter();
-        if filter.would_accept::<bool>() {
+        let prims = filter.accepted_target_types();
+        if prims.contains::<bool>() {
             col_iter.next().map(|c| c.replace("bool"));
         }
-        if filter.would_accept::<u8>() {
+        if prims.contains::<u8>() {
             col_iter.next().map(|c| c.replace("u8"));
         }
-        if filter.would_accept::<i8>() {
+        if prims.contains::<i8>() {
             col_iter.next().map(|c| c.replace("i8"));
         }
-        if filter.would_accept::<u16>() {
+        if prims.contains::<u16>() {
             col_iter.next().map(|c| c.replace("u16"));
         }
-        if filter.would_accept::<i16>() {
+        if prims.contains::<i16>() {
             col_iter.next().map(|c| c.replace("i16"));
         }
-        if filter.would_accept::<u32>() {
+        if prims.contains::<u32>() {
             col_iter.next().map(|c| c.replace("u32"));
         }
-        if filter.would_accept::<i32>() {
+        if prims.contains::<i32>() {
             col_iter.next().map(|c| c.replace("i32"));
         }
-        if filter.would_accept::<u64>() {
+        if prims.contains::<u64>() {
             col_iter.next().map(|c| c.replace("u64"));
         }
-        if filter.would_accept::<i64>() {
+        if prims.contains::<i64>() {
             col_iter.next().map(|c| c.replace("i64"));
         }
-        if filter.would_accept::<f32>() {
+        if prims.contains::<f32>() {
             col_iter.next().map(|c| c.replace("f32"));
         }
-        if filter.would_accept::<f64>() {
+        if prims.contains::<f64>() {
             col_iter.next().map(|c| c.replace("f64"));
         }
-        if filter.would_accept::<&str>() {
+        if prims.contains::<&str>() {
             col_iter.next().map(|c| c.replace("str"));
         }
-        if filter.would_accept::<&[u8]>() {
+        if prims.contains::<&[u8]>() {
             col_iter.next().map(|c| c.replace("bytes"));
         }
+        drop(prims);
         drop(filter);
         drop(col_iter);
 

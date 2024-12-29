@@ -301,14 +301,6 @@ impl<'tx, ID: AsID> Query for Upserter<'tx, ID> {
         (self.new_target(), self.new_key())
     }
 
-    fn key_query(&mut self) -> Self::KeyQuery<'_> {
-        self.new_key()
-    }
-
-    fn target_query(&mut self) -> Self::TargetQuery<'_> {
-        self.new_target()
-    }
-
     fn receiver(&mut self) -> Self::Receiver<'_> {
         self
     }
@@ -358,7 +350,6 @@ impl<ID: AsID> Receiver for Upserter<'_, ID> {
 
         if let Some(id) = value.downcast_ref::<SqlID>() {
             assert_eq!(self.id.as_id(), *id);
-            return;
         }
     }
 }

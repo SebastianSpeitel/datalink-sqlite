@@ -19,58 +19,67 @@ impl StoredData {
         conn: &rusqlite::Connection,
     ) -> Result<(), rusqlite::Error> {
         use datalink::link::IsPrimitive;
-        const FALLBACK_SQL: &str = "SELECT * FROM `values` WHERE `uuid` = ?";
 
         let filter = request.query_ref().filter();
 
-        debug_assert!(filter.accepted_key_types().contains::<IsPrimitive>());
+        if let Ok(v) = filter.accepted_value() {
+            if let Some(s) = (&v as &dyn core::any::Any).downcast_ref::<String>() {
+                dbg!(s);
+            }
+            dbg!(&v as &dyn core::any::Any);
+        }
+
+        debug_assert!(filter
+            .accepted_keys()
+            .accepted_types()
+            .contains::<IsPrimitive>());
 
         let mut cols = [Option::<&'static str>::None; 12];
         let mut col_iter = cols.iter_mut();
 
-        let prims = filter.accepted_target_types();
-        if prims.contains::<bool>() {
+        if filter.accept_value_of::<bool>() {
             col_iter.next().map(|c| c.replace("bool"));
         }
-        if prims.contains::<u8>() {
+        if filter.accept_value_of::<u8>() {
             col_iter.next().map(|c| c.replace("u8"));
         }
-        if prims.contains::<i8>() {
+        if filter.accept_value_of::<i8>() {
             col_iter.next().map(|c| c.replace("i8"));
         }
-        if prims.contains::<u16>() {
+        if filter.accept_value_of::<u16>() {
             col_iter.next().map(|c| c.replace("u16"));
         }
-        if prims.contains::<i16>() {
+        if filter.accept_value_of::<i16>() {
             col_iter.next().map(|c| c.replace("i16"));
         }
-        if prims.contains::<u32>() {
+        if filter.accept_value_of::<u32>() {
             col_iter.next().map(|c| c.replace("u32"));
         }
-        if prims.contains::<i32>() {
+        if filter.accept_value_of::<i32>() {
             col_iter.next().map(|c| c.replace("i32"));
         }
-        if prims.contains::<u64>() {
+        if filter.accept_value_of::<u64>() {
             col_iter.next().map(|c| c.replace("u64"));
         }
-        if prims.contains::<i64>() {
+        if filter.accept_value_of::<i64>() {
             col_iter.next().map(|c| c.replace("i64"));
         }
-        if prims.contains::<f32>() {
+        if filter.accept_value_of::<f32>() {
             col_iter.next().map(|c| c.replace("f32"));
         }
-        if prims.contains::<f64>() {
+        if filter.accept_value_of::<f64>() {
             col_iter.next().map(|c| c.replace("f64"));
         }
-        if prims.contains::<&str>() {
+        if filter.accept_value_of::<&str>() {
             col_iter.next().map(|c| c.replace("str"));
         }
-        if prims.contains::<&[u8]>() {
+        if filter.accept_value_of::<&[u8]>() {
             col_iter.next().map(|c| c.replace("bytes"));
         }
-        drop(prims);
         drop(filter);
         drop(col_iter);
+
+        // dbg!(&cols);
 
         let mut stmt = match cols {
             [None,..] => {
@@ -137,7 +146,6 @@ impl StoredData {
                     "SELECT `{c0}`, `{c1}`, `{c2}`, `{c3}`, `{c4}`, `{c5}` FROM `values` WHERE `uuid` = ?"
                 ))?
             }
-            [..,Some(..)] => conn.prepare_cached(FALLBACK_SQL)?,
             _ => {
                 let mut sql = String::with_capacity(256);
                 sql.push_str("SELECT ");
@@ -146,7 +154,7 @@ impl StoredData {
                     sql.push_str(col);
                     sql.push_str("`, ");
                 }
-                sql.push_str(" FROM `values` WHERE `uuid` = ?");
+                sql.push_str("1 FROM `values` WHERE `uuid` = ?");
                 conn.prepare_cached(&sql)?
             },
         };
@@ -154,7 +162,7 @@ impl StoredData {
         log::trace!(
             "Querying primitives for {:?}: {:?}",
             self.id,
-            stmt.expanded_sql()
+            stmt.expanded_sql().unwrap_or_default()
         );
 
         let mut rows = stmt.query([SqlID::from(self.id)])?;
@@ -166,19 +174,19 @@ impl StoredData {
         for (i, col) in cols.into_iter().flatten().enumerate() {
             let value = row.get_ref(i)?;
             match col {
-                "bool" => request.provide_from(RequestedValue::<bool>::new(value)),
-                "u8" => request.provide_from(RequestedValue::<u8>::new(value)),
-                "i8" => request.provide_from(RequestedValue::<i8>::new(value)),
-                "u16" => request.provide_from(RequestedValue::<u16>::new(value)),
-                "i16" => request.provide_from(RequestedValue::<i16>::new(value)),
-                "u32" => request.provide_from(RequestedValue::<u32>::new(value)),
-                "i32" => request.provide_from(RequestedValue::<i32>::new(value)),
-                "u64" => request.provide_from(RequestedValue::<u64>::new(value)),
-                "i64" => request.provide_from(RequestedValue::<i64>::new(value)),
-                "f32" => request.provide_from(RequestedValue::<f32>::new(value)),
-                "f64" => request.provide_from(RequestedValue::<f64>::new(value)),
-                "str" => request.provide_from(RequestedValue::<Str>::new(value)),
-                "bytes" => request.provide_from(RequestedValue::<Bytes>::new(value)),
+                "bool" => request.provide_from(RequestedLink::<bool>::new(value)),
+                "u8" => request.provide_from(RequestedLink::<u8>::new(value)),
+                "i8" => request.provide_from(RequestedLink::<i8>::new(value)),
+                "u16" => request.provide_from(RequestedLink::<u16>::new(value)),
+                "i16" => request.provide_from(RequestedLink::<i16>::new(value)),
+                "u32" => request.provide_from(RequestedLink::<u32>::new(value)),
+                "i32" => request.provide_from(RequestedLink::<i32>::new(value)),
+                "u64" => request.provide_from(RequestedLink::<u64>::new(value)),
+                "i64" => request.provide_from(RequestedLink::<i64>::new(value)),
+                "f32" => request.provide_from(RequestedLink::<f32>::new(value)),
+                "f64" => request.provide_from(RequestedLink::<f64>::new(value)),
+                "str" => request.provide_from(RequestedLink::<Str>::new(value)),
+                "bytes" => request.provide_from(RequestedLink::<Bytes>::new(value)),
                 _ => unreachable!(),
             }
         }
@@ -224,7 +232,8 @@ impl Data for StoredData {
         if request
             .query_ref()
             .filter()
-            .accepted_key_types()
+            .accepted_keys()
+            .accepted_types()
             .contains::<IsPrimitive>()
         {
             if let Err(e) = self.query_primitives(request, &conn) {
@@ -253,12 +262,13 @@ impl Unique for StoredData {
 struct Str;
 struct Bytes;
 
-struct RequestedValue<'a, T> {
+#[derive(Debug)]
+struct RequestedLink<'a, T> {
     value: rusqlite::types::ValueRef<'a>,
     _type: core::marker::PhantomData<T>,
 }
 
-impl<'a, T> RequestedValue<'a, T> {
+impl<'a, T> RequestedLink<'a, T> {
     fn new(value: rusqlite::types::ValueRef<'a>) -> Self {
         Self {
             value,
@@ -267,7 +277,7 @@ impl<'a, T> RequestedValue<'a, T> {
     }
 }
 
-impl<'a, T> Data for RequestedValue<'a, T>
+impl<'a, T> Data for RequestedLink<'a, T>
 where
     T: rusqlite::types::FromSql + datalink::Link<'a>,
 {
@@ -284,7 +294,7 @@ where
     }
 }
 
-impl Data for RequestedValue<'_, Str> {
+impl Data for RequestedLink<'_, Str> {
     fn query(&self, request: &mut impl Request) {
         self.query_owned(request);
     }
@@ -298,7 +308,7 @@ impl Data for RequestedValue<'_, Str> {
     }
 }
 
-impl Data for RequestedValue<'_, Bytes> {
+impl Data for RequestedLink<'_, Bytes> {
     fn query(&self, request: &mut impl Request) {
         self.query_owned(request);
     }
@@ -331,7 +341,7 @@ mod tests {
         let q = datalink::Request::query_ref(&req);
         let f = datalink::query::Query::filter(q);
 
-        dbg!(f.into_simple());
+        dbg!(f.__into_erased());
 
         assert_eq!(data_in.as_string(), data_out.as_string());
         assert_eq!(data_in.id(), data_out.id());

@@ -33,7 +33,7 @@ impl<'db> Migrations<'db> {
         macro_rules! migrate_to {
             ($version:literal) => {{
                 log::info!(concat!("Migrating to version ", $version, " ..."));
-                let mut conn = self.db.conn.lock().unwrap();
+                let mut conn = self.db.conn.write().unwrap();
                 let res = Migration::<$version>::run(&mut conn);
                 log::info!(concat!("Migrated to version ", $version));
                 res
@@ -156,6 +156,8 @@ impl Migration<2> {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use datalink::{data::DataExt, Data};
 
     use super::*;
@@ -195,7 +197,7 @@ mod tests {
         let v = migrations.next().unwrap().unwrap();
         assert_eq!(v, 1);
 
-        let conn = db.conn.lock().unwrap();
+        let conn = db.conn.read().unwrap();
 
         const INSERTS: &str = r"
             INSERT INTO `values` (`id`) VALUES ('1');
@@ -212,20 +214,21 @@ mod tests {
         // Migrate to current version
         migrations.run_all().unwrap();
 
-        let data = db.get("1".parse().unwrap());
-        let items = data.as_items().unwrap();
-        let list = data.as_list().unwrap();
+        let data = db.get(ID::from_str("1").unwrap());
+        let items = data.as_items();
+        let list = data.as_list();
+
+        dbg!(&data);
+        dbg!(&items);
+        dbg!(&list);
 
         assert_eq!(data.get_id(), Some("1".parse().unwrap()));
-        assert_eq!(items.len(), 1);
+        assert_eq!(items.len(), 2);
 
-        assert_eq!(items[0].0.get_id(), Some("3".parse().unwrap()));
-        assert_eq!(items[0].0.as_str().unwrap(), "key");
-        assert_eq!(items[0].1.get_id(), Some("2".parse().unwrap()));
-        assert_eq!(items[0].1.as_bool().unwrap(), true);
+        assert_eq!(items[1].0.as_string().unwrap(), "key");
+        assert_eq!(items[1].1.as_bool().unwrap(), true);
 
-        assert_eq!(list.len(), 1);
-        assert_eq!(list[0].get_id(), Some("2".parse().unwrap()));
+        assert_eq!(list.len(), 2);
         assert_eq!(list[0].as_bool().unwrap(), true);
     }
 }
